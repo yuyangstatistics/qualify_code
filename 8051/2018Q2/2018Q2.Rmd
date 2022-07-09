@@ -1,0 +1,367 @@
+---
+title: "2018 Q2"
+author: "Yu Yang"
+date: "8/8/2020"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(glmnet)
+library(ncvreg)
+library(glmvsd)
+library(SOIL)
+library(randomForest)
+library(faraway)
+library(car)
+library(leaps)
+library(gtools)
+library(xgboost)
+library(tidyverse)
+library(caret)
+library(ggplot2)
+library(MASS)
+```
+
+## Functions used for analysis
+```{r}
+source('2018Q2.R')
+```
+
+
+## Read Data
+```{r}
+load('data/q2.rda')
+dataset <- data.frame(dataset2)
+View(dataset)
+str(dataset)
+head(dataset)
+colnames(dataset)
+nrow(dataset)
+ncol(dataset)
+
+
+# export data to a csv file
+write.csv(dataset, "data/2018Q2.csv")
+```
+
+## Data Exploration
+From the histogram, V11, V12, V13, V14, V16, V17, V18, V19, V20 are a bit skewed. Also, their ranges are different. qqplots have shown the same skewness. From the heatmap generated in python, we see some correlated groups: (V1, V6, V21, V26), (V2, V7, V22, V27), (V3, V8, V23, V28), (V4, V9, V24, V29), (V5, V10, V25, V30). Such a collinearity patterns suggest that regularized methods are required.
+
+About outliers, from the boxplots, we can see a few points are outside the IQR range. 
+
+Also, for regression problems, it is important to check scatter plots.
+
+## Check Histgoram, QQplot, Boxplot, and correlation
+```{r}
+# check means and stds
+apply(dataset, 2, function(x) mean(x, na.rm=TRUE))
+apply(dataset, 2, function(x) sd(x, na.rm=TRUE))
+
+hist.qq.box.plot(dataset)
+
+# corr
+(corr <- cor(dataset[, 191:200]))
+
+pairs(dataset[, c(30, 31, 32, 33, 34, 35)])
+pairs(dataset[, c(22, 23, 24, 25, 26, 27, 28, 29)])
+```
+
+
+## Check scatter plots and outliers, output the preprocessed data.
+```{r}
+# check outliers by seeing the boxplots
+train <- dataset[1:150, ]
+View(train)
+test <- dataset[151:300, ]
+View(test)
+
+# # check outliers
+# lmod <- lm(y ~ ., train)
+# outlier.check(lmod)
+# 
+# # remove 158th, and refit the lm
+# lmod <- lm(y ~ ., train[-158,])
+# outlier.check(lmod)
+# 
+# # remove 158th, 239th
+# lmod <- lm(y ~ ., train[c(-158, -239), ])
+# outlier.check(lmod)
+# 
+# # remove 158th, 239th, 281th
+# lmod <- lm(y ~ ., train[c(-158, -239, -281), ])
+# outlier.check(lmod)
+# 
+# # remove 158th, 239th, 281th, 28th
+# lmod <- lm(y ~ ., train[c(-158,-239, -281, -28), ])
+# outlier.check(lmod)
+# 
+# dev <- train[c(-158,-239, -281, -28), ]
+
+dev <- data.frame(train)
+write.csv(dev, file = "data/dev.csv")
+
+# check scatter plots
+# Note: since scatter plot requires labels, so it should use training set.
+scatter.plot(dev)
+# it suggests V12 has some quadratic pattern.
+```
+
+## Create a comparison dataframe to save comparison results
+```{r}
+comp.df <- data.frame(matrix(0, ncol = 60, nrow = 16), 
+                      row.names = c('aic.err', 'aic.sd', 'bic.err', 'bic.sd', 
+                  'ridge.err', 'ridge.sd', 'lasso.err', 'lasso.sd', 
+                  'mcp.err', 'mcp.sd', 'scad.err', 'scad.sd', 
+                  'xgb.err', 'xgb.sd', 'rf.err', 'rf.sd'))
+col.names <- vector(length = 60)
+for (i in 1:60) {
+  col.names[i] <- paste("Comp", i, sep="")
+}
+colnames(comp.df) <- col.names
+View(comp.df)
+```
+
+
+## Tune parameters for XGBoost
+Since the importance measure of XGBoost and Random Forest would be used later, I decide to run them first to get a basic idea about their goodness of fit and tune the parameters. So the next steps could be done systematically.
+
+Split the development set into training and testing, and have a basic idea about how XGBoost and Random Forest would work from graphics. Then, we can consider using these two models to provide feature importance measure.
+
+The performance of XGBoost is much better than that of Random Forest, and hence I may trust the result by XGBoost more.
+
+```{r}
+# tune parameters for XGBoost using dev data and check feature importance
+X_train <- xgb.DMatrix(as.matrix(dev %>% select(-y)))
+y_train <- dev$y
+(opt.param <- tune.xgb.reg(X_train, y_train))
+
+# specify the optimal parameters
+xgb.params <- list(max_depth = 2, 
+             eta = 0.1, 
+             gamma = 0, 
+             colsample_bytree = 0.9, 
+             min_child_weight = 1, 
+             subsample = 0.9)
+xgb.nrounds <- 200
+```
+
+
+## Get a basic idea about how different methods work graphically
+```{r}
+plot.regularized(dev)
+
+# too many features, so not working
+# plot.abic(dev)
+
+plot.xgb.rf(dev, xgb.params, xgb.nrounds)
+```
+
+
+## The 1st round of Model Selection
+
+First, consider no interactions and select models to deal with collinearity, then include interaction terms. Use cross-validation to choose the best model selection method among AIC, BIC, Ridge, LASSO, MCP, and SCAD. It turns out that BIC is the best model selection method.
+
+
+### When only consider single terms
+```{r}
+# compare models
+(comp1.1 <- cv.regularized.compare(dev, nrow(dev) / 8, 25))
+(comp1.2 <- cv.ml.compare(dev, nrow(dev) / 8, 25, xgb.params, xgb.nrounds))
+comp.df[5:16, 1] = c(comp1.1, comp1.2)
+
+# check the selected features by AIC, BIC and regularized methods
+# select.features.abic(dev)
+select.features.regularized(dev)
+
+# check the feature importance given by SOIL, Random Forest and XGBoost
+check.importance(dev, xgb.params, xgb.nrounds)
+```
+
+
+## 2nd round of feature selection
+The first round is to help us determine the candidate of features, namely, do a first round of selection to reduce the variance in estimation.
+
+From the previous analysis, we found that X1, 2, 3, 4, 7, 22, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 39, 44, 87, 88, 92, 97, 103, 142, 143, 171, 172, 175, 193, 194, 197 should be considered.
+
+Since we are doing a finer comparison, we should increase the validation size.
+```{r}
+# start with single terms
+dev2 <- order2.model.matrix(dev)$df
+(copm2.1 <- cv.compare(dev2, round(nrow(dev2) / 5), 25))
+(copm2.2 <- cv.ml.compare(dev2, nrow(dev2) / 5, 25, xgb.params, xgb.nrounds))
+comp.df[, 2] = c(copm2.1, copm2.2)
+select.features.abic(dev2)
+select.features.regularized(dev2)
+check.importance(dev2, xgb.params, xgb.nrounds)
+
+# export data to a csv file
+write.csv(comp.df[, 1:11], "data/2019Q2_comparison.csv")
+```
+
+
+
+## Check the reliability of feature selection
+```{r}
+
+x <- as.matrix(dev[, -which(names(dev) %in% c("y"))])
+y <- dev$y
+
+model_check <- rep(0, 30)
+model_check[c(11, 12, 13, 17, 18)] <- 1
+model_check
+v_BIC <- glmvsd(x, y,
+                model_check = model_check,
+                family = "gaussian", method = "union",
+                weight_type = "BIC", prior = TRUE)
+v_BIC
+
+ins_seq <- stability.test(x, y, method = "seq",
+                          penalty = "LASSO", nrep = 100,
+                          remove = 0.1, tau = 0.2, nfolds = 5)
+
+ins_seq
+
+ins_bs <- stability.test(x, y, method = "bs",
+                         penalty = "LASSO", nrep = 100,
+                         remove = 0.1, tau = 0.2, nfolds = 5)
+
+ins_bs
+
+ins_per <- stability.test(x, y, method = "per",
+                          penalty = "LASSO", nrep = 100,
+                          remove = 0.1, tau = 0.1, nfolds = 5)
+
+ins_per
+
+ins_per <- stability.test(x, y, method = "per",
+                          penalty = "MCP", nrep = 100,
+                          remove = 0.1, tau = 0.1, nfolds = 5)
+
+ins_per
+
+ins_per <- stability.test(x, y, method = "per",
+                          penalty = "SCAD", nrep = 100,
+                          remove = 0.1, tau = 0.1, nfolds = 5)
+
+ins_per
+```
+
+
+
+
+## 3rd round of feature selection
+
+From the comparison results above, I would finally select V11, V12, V13, V17, V18 these five variables.
+
+```{r}
+dev.final <- order2.model.matrix(dev[, c(1, 1 + c(11, 12, 13, 17, 18))])$df
+lm.mod <- lm(y ~ ., dev.final)
+summary(lm.mod)
+
+# try regsubset to do exhaustive search
+x <- as.matrix(dev.final[, -which(names(dev.final) %in% c("y"))])
+y <- dev.final$y
+reg.all<-regsubsets(x,y,nvmax=20) # the default gives the best model for each dimension
+
+reg.summary<-summary(reg.all)
+names(reg.summary)
+
+which.max(reg.summary$rsq)
+which.max(reg.summary$adjr2)
+which.min(reg.summary$rss)
+which.min(reg.summary$cp)
+which.min(reg.summary$bic)
+
+coef(reg.all,id=5) # coefficient of the indexed model on the list
+
+# try step selection 
+mod0 <- lm(y ~ V11 + V12 + V13 + V17 + V12.2, 
+           dev.final)
+# by AIC
+step(mod0,
+     scope=list(upper=~.,lower=~V11 + V12 + V13 + V12.2),
+     direction="both", trace = FALSE)
+# by BIC
+step(mod0, k = log(nrow(dev.final)),
+     scope=list(upper=~.,lower=~V11 + V12 + V13 + V12.2),
+     direction="both", trace = FALSE)
+
+
+# manually do some comparison
+lm.form <- y ~ V11 + V12 + V13 + V17 + V12.2
+cv.lmod.compare(dev.final, round(nrow(dev.final) / 4), 25, lm.form)
+
+lm.form <- y ~ V11 + V12 + V13 + V17 + V12.2 + V12.V17
+cv.lmod.compare(dev.final, round(nrow(dev.final) / 5), 25, lm.form)
+
+lm.form <- y ~ V11 + V12 + V13 + V18 + V12.2 + V12.V18
+cv.lmod.compare(dev.final, round(nrow(dev.final) / 5), 25, lm.form)
+
+lm.form <- y ~ V11 + V12 + V13 + V18 + V12.2
+cv.lmod.compare(dev.final, round(nrow(dev.final) / 5), 25, lm.form)
+
+mod1 <- lm(y ~ V11 + V12 + V13 + V17 + V12.2 + V12.V17, dev.final)
+mod2 <- lm(y ~ V11 + V12 + V13 + V17 + V12.2, dev.final)
+anova(mod1, mod2)
+
+mod1 <- lm(y ~ V11 + V12 + V13 + V18 + V12.2 + V12.V18, dev.final)
+mod2 <- lm(y ~ V11 + V12 + V13 + V18 + V12.2, dev.final)
+anova(mod1, mod2)
+
+```
+
+
+## Get the summary of the final model
+Since we did scaling before, need to note that we now need to go back to the original scale to estimate the coefficients.
+```{r}
+train.original <- dataset[1:300, ]
+test.original <- dataset[301:569, ]
+dev.original <- train.original[c(-158,-239, -281, -28), ]
+
+# check the final model
+final.mod <- lm(y ~ V11 + V12 + V13 + V17 + I(V12^2), dev.original)
+AIC.BIC(final.mod)
+summary(final.mod)
+outlier.check(final.mod)
+boxcox(lm(y + 300 ~ V11 + V12 + V13 + V17 + I(V12^2), dev.original))
+plot.lmod(dev.original, y ~ V11 + V12 + V13 + V17 + I(V12^2))
+```
+
+# Prediction
+
+For prediction, it would be fine to just use the original data.
+
+## Use LOO to estimate the model accuracy
+```{r}
+
+select.features.regularized(dev)
+lasso.mod.form <- y ~ x1 + x3 + x7 + x25 + x26 + x27 + x28 + x29 + x30 + x33 + x34 + x87 + x88 + x92 + x97 + x143 + x172 + x194 + x197
+loo.lm(dev, lasso.mod.form)
+mcp.mod.form <- y ~ V11 + V12 + V13 + V17 + V11*V13 + V12*V17 + I(V12^2)
+
+scad.mod.form <- y ~ x1 + x2 + x3 + x7 + x25 + x26 + x27 + x28 + x29 + x30 + x31 + x34 + x88 + x97 + x143
+loo.lm(dev, scad.mod.form)
+
+# combine the prediction from lm, bic on dev, and lasso, mcp on dev9
+system.time(loo.avg.results <- loo.avg(dev.original, lm.mod.form, 
+                                       bic.mod.form, lasso.mod.form, 
+                                       mcp.mod.form))
+
+loo.avg.results
+```
+
+## Make final prediction
+```{r}
+View(test.original)
+pred <- pred.avg(dev.original, test.original, 
+                 lm.mod.form, bic.mod.form, lasso.mod.form, mcp.mod.form)
+
+
+save(pred, file = 'data/2019prediction.rda')
+```
+
+
+
+
+

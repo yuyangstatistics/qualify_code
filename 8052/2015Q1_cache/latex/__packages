@@ -1,0 +1,14 @@
+base
+carData
+car
+knitr
+gmodels
+MASS
+nlme
+mvtnorm
+Matrix
+lme4
+pbkrtest
+cfcdae
+dplyr
+mgcv

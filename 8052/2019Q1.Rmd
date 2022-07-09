@@ -1,0 +1,295 @@
+---
+title: "\\vspace{-1in} 2019 Q1"
+author: "codename"
+header-includes:
+- \usepackage{fancyhdr}
+- \pagestyle{fancy}
+- \fancyhead[CO]{codename}
+- \usepackage{float}
+- \usepackage{subfig}
+output: pdf_document
+geometry: "left = 0.5in, right = 0.5in, top = 1in, bottom = 1in"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, cache = TRUE, fig.pos = 'H', comment = NA)
+# set path to current working directory
+setwd(dirname(rstudioapi::getActiveDocumentContext()$path))
+# used for dealing with figures and output control
+library(knitr) 
+# used to control the output printing, adapted from the post: https://community.rstudio.com/t/showing-only-the-first-few-lines-of-the-results-of-a-code-chunk/6963
+hook_output <- knit_hooks$get("output")
+knit_hooks$set(output = function(x, options) {
+  lines <- options$output.lines
+  if (is.null(lines)) {
+    return(hook_output(x, options))  # pass to default hook
+  }
+  x <- unlist(strsplit(x, "\n"))
+  more <- "..."
+  if (length(lines)==1) {        # first n lines
+    if (length(x) > lines) {
+      # truncate the output, but add ....
+      x <- c(head(x, lines), more)
+    }
+  } else {
+    x <- c(more, x[lines], more)
+  }
+  # paste these lines together
+  x <- paste(c(x, ""), collapse = "\n")
+  hook_output(x, options)
+})
+```
+
+
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+library(gmodels)
+library(MASS)
+library(car)
+library(ggplot2)
+library(dplyr)
+library(emmeans)
+library(nlme)
+library(geepack)
+library(emmeans)
+library(multcomp)
+```
+
+(Note: For clarity of the report, part of the output results are hidden. And the utilized packages are as shown in the Appendix.)
+
+## (a)
+
+```{r}
+d <- read.csv("cholesterol.csv", header = T)
+d <- within(d , {
+  treat <- as.factor(treat)
+  drug <- as.factor(drug)
+  statin <- as.factor(statin)
+  gender <- as.factor(gender)
+  race <- as.factor(race)
+  ldl.chg <- ldl - ldl_0
+  ldl.pchg <- ldl.chg / ldl_0 * 100
+})
+```
+
+The experiment is randomized, so it would fine to use either unadjusted model or adjusted model. Here, I use adjusted model for variance reduction. This is a longitudinal data, so we should fit a linear mixed model, with fixed effects for the factorial treatment structure and with a random intercept per participant to model within-subject correlation. After model selection, the treatment effects are estimated by using contrasts. 
+
+As for the response, I try both "change in LDL from baseline" and "percent change in LDL", and use residual plots to tell which one is better. Figure \ref{fig:ldl}-\ref{fig:ldl-pchg} show the mean ldl, mean change in ldl, mean percent change in ldl by treatment.
+
+Since we are supposed to estimate the effects of the treatment, the other covariates should be additive. Start with a full model, and use p-value 0.1 as the cutoff to select variables, and then use `anova` to validate model choices. Since `gender` and `female` have the same effect, I would only include `gender` in the model. Also, I treat `visit` as a factor. (Using `correlation = corAR1()` would lead to convergence error, so I just use identity correlation structure.)
+
+Starting with a general model, try using both percent change and change from baseline as the response, and as shown in Figure \ref{fig:fig1} - \ref{fig:fig3}, the residuals show some problem when using percent change. And when using change from baseline, the residuals look fine, as shown in Figure \ref{fig:fig4} - \ref{fig:fig6}. So for the rest of the analysis, I use `ldl.chg` as the response.
+
+
+```{r results='hide'}
+options(contrasts = c("contr.treatment", "contr.poly"))
+da <- d %>% filter(visit > 0)
+# try using percent change as the response
+ma.lme0 <- lme(ldl.pchg ~ drug * statin + factor(visit) + ldl_0 + age + 
+                gender + race + smoking + disease_yrs, random = ~1|id, 
+              data = da)
+Anova(ma.lme0)
+# try using change from baseline as the response
+ma.lme1 <- lme(ldl.chg ~ drug * statin + factor(visit) + ldl_0 + age + 
+                gender + race + smoking + disease_yrs, random = ~1|id, 
+              data = da)
+
+Anova(ma.lme1)
+```
+
+
+```{r}
+ma.lme2 <- update(ma.lme1, method = "ML")
+ma.lme3 <- update(ma.lme2, fixed = . ~ drug * statin + factor(visit) + 
+                    ldl_0 + gender)
+ma.lme4 <- update(ma.lme2, fixed = . ~ drug + statin + factor(visit) + 
+                    ldl_0 + gender)
+anova(ma.lme2, ma.lme3, ma.lme4)
+```
+
+The interaction effect is borderline significant, so there can be two strategies to estimate the treatment effect. First, remove the interaction effect, and analyze the drug effect and the statin effect separately. Second, use `treat` to refit the model and consider the effect of drug at different levels of statin, and the effect of statin at different levels of drug.
+
+If we use the first strategy, then we should use `ma.lme4`. Also, in order to adjust for multiple comparison, `glht{multcomp}` is used to estimate the contrasts for `drug`. And for `statin`, use `fit.contrast` to estimate its effect. We can also use `intervals()`, since there are only two levels, but do note that when using `intervals()`, we need to make sure the options for contrasts is `contr.treatment`.
+
+```{r output.lines = c(11:15)}
+m4a <- update(ma.lme4, method = "REML")
+contr <- rbind("standard vs new" = c(1, -0.5, -0.5), 
+               "dose 400 vs dose 600" = c(0, 1, -1), 
+               "standard vs dose 400" = c(1, -1, 0), 
+               "standard vs dose 600" = c(1, 0, -1))
+g <- glht(m4a, linfct = mcp(drug = contr), alternative = "two.sided")
+par(mar=c(5.1, 9.1, 4.1, 2.1))
+plot(g)
+par(mar=c(5.1, 4.1, 4.1, 2.1))
+summary(g)
+```
+
+```{r output.lines = c(15:19)}
+confint(g)
+```
+
+```{r echo=FALSE}
+# if we want to do Tukey HSD test
+# g <- glht(m4a, linfct = mcp(drug = "Tukey"), alternative = "two.sided")
+# summary(g)
+# confint(g)
+
+# we can also use emmeans to do Tukey pairwise comparison
+# emmeans(m4a, pairwise~drug)
+```
+
+```{r}
+# estimate the effect of statin
+fit.contrast(m4a, "statin", coeff = c(1, -1), conf.int = 0.95)
+```
+
+
+If we use the second strategy, we need to refit the model with `treat` and do multiple comparison to estimate effect of drug at different levels of statin, and the same for statin. For convenience, I would go for the first strategy.
+
+```{r results='hide'}
+m5a <- update(m4a, fixed = .~ treat + factor(visit) + ldl_0 + gender)
+contr <- rbind("standard vs new(no statin)" = c(1, -0.5, -0.5, 0, 0, 0), 
+               "dose 400 vs dose 600(no statin)" = c(0, 1, -1, 0, 0, 0), 
+               "standard vs dose 400(no statin)" = c(1, -1, 0, 0, 0, 0), 
+               "standard vs dose 600(no statin)" = c(1, 0, -1, 0, 0, 0), 
+               "standard vs new(with statin)" = c(0, 0, 0, 1, -0.5, -0.5), 
+               "dose 400 vs dose 600(with statin)" = c(0, 0, 0, 0, 1, -1), 
+               "standard vs dose 400(with statin)" = c(0, 0, 0, 1, -1, 0), 
+               "standard vs dose 600(with statin)" = c(0, 0, 0, 1, 0, -1))
+g <- glht(m5a, linfct = mcp(treat = contr), alternative = "two.sided")
+summary(g)
+confint(g)
+
+contr <- rbind("no vs statin(standard)" = c(-1, 0, 0, 1, 0, 0), 
+               "no vs statin(dose 400)" = c(0, -1, 0, 0, 1, 0), 
+               "no vs statin(dose 600)" = c(0, 0, -1, 0, 0, 1))
+g <- glht(m5a, linfct = mcp(treat = contr), alternative = "two.sided")
+summary(g)
+confint(g)
+```
+
+
+## (b)
+For this part, we need to refit the model with interaction terms included. As suggested in part (a), the interaction between `drug` and `statin` is not significant, so I will not include it in the model. Starting with a large plausible model, I then do manual model selection, using 0.05 as a cutoff to select significant terms.
+
+```{r output.lines = c(1, 19:25)}
+mb.lme1 <- lme(ldl.chg ~ (drug + statin) * (visit + ldl_0 + age + gender + 
+                                              race + smoking + disease_yrs), 
+               random = ~1|id, data = da, method = "ML")
+Anova(mb.lme1)
+```
+
+```{r}
+mb.lme2 <- update(mb.lme1, fixed = .~ drug * visit + statin * visit + 
+                    statin * ldl_0  + gender)
+anova(mb.lme1, mb.lme2)
+Anova(mb.lme2)
+fixef(mb.lme2)
+```
+
+In `mb.lme1` results, the p-value for `stain:gender` is 0.573322 and the one for `statin:ldl_0` is 4.355e-05. Comparing `mb.lme1` and `mb.lme2`, there is no significant difference, so the effect of statins doesn't differ between men and women, but differ by baseline of LDL. The estimated fixed effect is -0.09920914, and it means that if using statin, with every unit increase in `ldl_0`, the `ldl.chg` would decrease -0.09920914 unit more than the case without statin.
+
+## (c)
+A less conservative alternative is the FDR method of Benjamin & Hochberg. The idea is: start with the largest p-value, work down, and reject $H_{0(j)}$ if $p_{(j)} \leq \frac{\epsilon j}{K}$, and $K=6$ in this case. This method controls false discovery rate and is less conservative than Bonferroni. From the results, we can see that $p_1 = 0.002, p_4 = 0.01$ remain significant after the adjustment.
+
+```{r}
+p <- c(0.002, 0.25, 0.04, 0.01, 0.08, 0.6)
+p.ordered <- sort(p)
+threshold <- 0.05 * c(1:6) / 6
+p.ordered[which(p.ordered <= threshold)]
+```
+
+
+
+## (d)
+In this part, the response is binary, so we need to fit a generalized linear mixed model. Also, since the new response is based on `ldl`, not `ldl.chg`, we need to create a new variable `fu` and use `statin:fu` to estimate the effect of statin use. There are multiple candidate models to use: `glmer`, `glmmPQL`, and `geeglm`. Since the results from GEE is usually more stable, I use `geeglm` here, and include other covariates to reduce variance.
+
+```{r results='hide', warning=FALSE, message=FALSE}
+dd <- d %>% mutate(ldl.high = ifelse(ldl > 150, 1, 0), 
+                   fu = ifelse(visit > 0, 1, 0))
+md.gee1 <- geeglm(ldl.high ~ drug * statin * fu + age + 
+                    gender + race + smoking + disease_yrs, id = id, 
+                  family = binomial, data = dd, corstr = "exchangeable")
+summary(md.gee1)
+md.gee2 <- geeglm(ldl.high ~ drug * statin + drug * fu + statin * fu + 
+                    age + race, id = id, 
+                  family = binomial, data = dd, corstr = "exchangeable")
+md.gee3 <- geeglm(ldl.high ~ drug * statin + statin * fu + 
+                    age + race, id = id, 
+                  family = binomial, data = dd, corstr = "exchangeable")
+```
+
+```{r}
+anova(md.gee1, md.gee2)
+anova(md.gee2, md.gee3)
+```
+
+```{r output.lines = c(7:19)}
+summary(md.gee3)
+```
+
+The use of statins indeed decreases the prevalence of LDL>150mg/dL, and the p-value is 3.3e-06. The point estimate of the effect is -1.47731, with 95% CI being [-2.100, -0.855]. Note that this is a binomial model, so the effects represents the ratio of odds, and it means that using statins will reduce the odds of high LDL to 22.8% of the original level, namely, reduce by 77.2%.
+
+```{r}
+c(-0.67473 - 1.96 * 0.28548, -0.67473 + 1.96 * 0.28548)
+exp(-0.67473)
+```
+
+
+\newpage
+
+## Appendix
+
+### Packages
+
+```{r eval=FALSE}
+library(gmodels)
+library(MASS)
+library(car)
+library(ggplot2)
+library(dplyr)
+library(emmeans)
+library(nlme)
+library(geepack)
+library(emmeans)
+library(multcomp)
+```
+
+### Figures
+```{r fig-emmeans, echo = FALSE, fig.align="center", fig.cap='Model Diagnostics', fig.subcap=c('\\label{fig:ldl}residual plot of ma.lme0', '\\label{fig:ldl-chg}qqnorm of residuals', '\\label{fig:ldl-pchg}qqnorm of random effects of ma.lme0'), out.width='.33\\linewidth', fig.asp=1, fig.ncol = 3, message=FALSE, warning=FALSE}
+# use emmip
+# m1 <- lm(ldl ~ drug * statin * factor(visit), data = d)
+# emmip(m1, drug*statin ~ factor(visit), style = "factor")
+
+# use ggplot
+plotdf <- d %>% group_by(drug, statin, visit) %>%
+  summarise(mean.ldl = mean(ldl))
+ggplot(plotdf, aes(x=visit, y=mean.ldl, color=statin, shape=drug, 
+                   linetype=drug)) + 
+  geom_point() + geom_line() + 
+  labs(x="Month", y = "LDL(mg/dL)") + 
+  ggtitle("Mean LDL over time by Group") + 
+  theme(plot.title = element_text(hjust = 0.5)) +
+  scale_x_continuous(breaks = c(0, 12, 24, 36, 48))
+
+
+m2 <- lm(ldl.chg ~ drug * statin * factor(visit), data = d)
+emmip(m2, drug*statin ~ factor(visit), style = "factor")
+m3 <- lm(ldl.pchg ~ drug * statin * factor(visit), data = d)
+emmip(m3, drug*statin ~ factor(visit), style = "factor")
+```
+
+```{r fig-lme0, echo = FALSE, fig.align="center", fig.cap='Model Diagnostics', fig.subcap=c('\\label{fig:fig1}residual plot of ma.lme0', '\\label{fig:fig2}qqnorm of residuals', '\\label{fig:fig3}qqnorm of random effects of ma.lme0'), out.width='.33\\linewidth', fig.asp=1, fig.ncol = 3}
+plot(ma.lme0)
+qqnorm(residuals(ma.lme0), main = "Q-Q Plot for residuals")
+qqline(residuals(ma.lme0))
+qqnorm(ranef(ma.lme0)$"(Intercept)", main = "Q-Q Plot for random intercept")
+qqline(ranef(ma.lme0)$"(Intercept)")
+```
+
+
+```{r fig-lme1, echo = FALSE, fig.align="center", fig.cap='Model Diagnostics', fig.subcap=c('\\label{fig:fig4}residual plot of ma.lme1', '\\label{fig:fig5}qqnorm of residuals', '\\label{fig:fig6}qqnorm of random effects of ma.lme1'), out.width='.33\\linewidth', fig.asp=1, fig.ncol = 3}
+plot(ma.lme1)
+qqnorm(ma.lme1)
+qqnorm(ma.lme1, form = ~ranef(.))
+```
+

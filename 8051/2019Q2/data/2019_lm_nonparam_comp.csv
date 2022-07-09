@@ -1,0 +1,4 @@
+﻿model,err,sd
+y ~ V11 + V12 + V13 + V17 + V12.2,23.79,4.36
+XGBoost,56.99,17.02
+Random Forest,311.8,131.43

@@ -1,0 +1,17 @@
+base
+knitr
+gmodels
+MASS
+carData
+car
+dplyr
+emmeans
+nlme
+Matrix
+lme4
+geepack
+mvtnorm
+survival
+TH.data
+multcomp
+ggplot2

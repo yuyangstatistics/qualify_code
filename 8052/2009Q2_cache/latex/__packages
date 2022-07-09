@@ -1,0 +1,11 @@
+base
+knitr
+gmodels
+MASS
+carData
+car
+dplyr
+mvtnorm
+survival
+TH.data
+multcomp

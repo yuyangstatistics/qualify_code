@@ -1,0 +1,162 @@
+---
+title: "\\vspace{-1in} 2018 Q1"
+author: "codename"
+header-includes:
+- \usepackage{fancyhdr}
+- \pagestyle{fancy}
+- \fancyhead[CO]{codename}
+- \usepackage{float}
+- \usepackage{subfig}
+output: pdf_document
+geometry: "left = 0.5in, right = 0.5in, top = 1in, bottom = 1in"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, cache = TRUE, fig.pos = 'H')
+# set path to current working directory
+setwd(dirname(rstudioapi::getActiveDocumentContext()$path))
+# used for dealing with figures and output control
+library(knitr) 
+# used to control the output printing, adapted from the post: https://community.rstudio.com/t/showing-only-the-first-few-lines-of-the-results-of-a-code-chunk/6963
+hook_output <- knit_hooks$get("output")
+knit_hooks$set(output = function(x, options) {
+  lines <- options$output.lines
+  if (is.null(lines)) {
+    return(hook_output(x, options))  # pass to default hook
+  }
+  x <- unlist(strsplit(x, "\n"))
+  more <- "..."
+  if (length(lines)==1) {        # first n lines
+    if (length(x) > lines) {
+      # truncate the output, but add ....
+      x <- c(head(x, lines), more)
+    }
+  } else {
+    x <- c(more, x[lines], more)
+  }
+  # paste these lines together
+  x <- paste(c(x, ""), collapse = "\n")
+  hook_output(x, options)
+})
+```
+
+
+```{r message=FALSE, warning=FALSE}
+library(gmodels)
+library(MASS)
+library(car)
+library(nlme)
+library(emmeans)
+library(dplyr)
+```
+
+
+## (1)
+```{r}
+d <- read.csv("q1.csv", header = T)
+d <- within(d, {
+  treat <- as.factor(treat)
+  gender <- as.factor(gender)
+  race <- as.factor(race)
+  scanner <- as.factor(scanner)
+  clinic <- as.factor(clinic)
+})
+```
+
+```{r fig.align="center", fig.width=5, fig.height=3}
+m <- lm(bmd.chg ~ treat * factor(month), data = d)
+emmip(m, treat ~ factor(month), style = "factor")
+with(d, {
+  interaction.plot(x.factor = month, trace.factor = treat, 
+                   response = bmd.chg, fun = mean, 
+                   legend = T, xpd = NA, type = "b", 
+                   trace.label = "treat", xlab = "Month", 
+                   ylab = "Pct change in BMD", pch = c(1, 2),
+                   lty = c(1, 2), col = c("red", "blue"), 
+                   main = "Percent Change in BMD by Group")
+})
+```
+For treat0, namely, placebo group, the mean percent change in BMD keeps going down, while for the active drug group, it first goes up, then goes down after month 12. Also, the differences between the two treatment are not the same in the follow-up months.
+
+## (2)
+This is a longitudinal data, so we need to fit a linear mixed model. The model including all two-way interactions suffers singularity issue. So I then starting with the largest plausible model, and do manual selection. Keep the items with p-value < 0.1. Also, for the same reason as that in 2015 Q1, it is justifiable to use identity as the correlation matrix.
+
+```{r results='hide'}
+d2 <- d %>% filter(month > 0)
+m.lme1 <- lme(bmd.chg ~ treat + factor(month) + bmd0 + age + gender + 
+                           race + scanner + clinic + smoking + bmibl + 
+                           il6bl + crpbl + cd4bl, random = ~1|id, 
+              data = d2, method = "ML")
+anova(m.lme1)
+m.lme2 <- update(m.lme1, fixed = . ~ treat + factor(month) + 
+                   bmd0 + scanner)
+Anova(m.lme2)
+m.lme3 <- update(m.lme2, fixed = . ~ treat + factor(month) + scanner)
+Anova(m.lme3)
+```
+
+```{r}
+anova(m.lme1, m.lme2, m.lme3)
+```
+
+`m.lme4` is the selected model. Checking the residuals, as shown in Figure \ref{fig:fig1}-\ref{fig:fig3} in the Appendix, no transformation is needed.
+
+```{r contrast}
+m.lme4 <- update(m.lme2, method = "REML")
+fit.contrast(m.lme4, "treat", coeff = c(1, -1), conf.int = 0.95)
+intervals(m.lme4)
+```
+
+The placebo group has BMD measure 1.39 lower than the active drug group, with the p-value being 0.0015. The 95% CI is [-2.25, -0.54].
+
+## (3)
+It is the treatment difference after adjusting for `scanner` and `month`, namely, the effect of treatment after excluding the effect of `scanner` and `month`. And in the plot in (1), the mean percentage change in BMD is raw mean, without forcing the difference among `month` to be the same.
+```{r}
+xtabs(~treat+month, d2)
+```
+
+## (4)
+Firstly, there might be model bias in our proposed model. Secondly, augmenting the missing data with fitted values would reduce the variance, and reduce the width of the confidence interval. In summary, the new CI would have shorter coverage, as well as possible biased center point.
+
+## (5)
+Now the data is grouped under `clinic`, instead of `id`, so we need to fit another linear mixed model. Again, start with the largest plausible model and do manual model selection.
+```{r}
+d5 <- d %>% filter(month == 0)
+m5.lme1 <- lme(bmd ~ age + gender + race + scanner + smoking + 
+                                bmibl + il6bl + crpbl + cd4bl, 
+               random = ~1|clinic, data = d5, method = "ML")
+Anova(m5.lme1)
+m5.lme2 <- update(m5.lme1, . ~ gender + race + scanner + bmibl + il6bl)
+Anova(m5.lme2)
+anova(m5.lme1, m5.lme2)
+m5.lme2 <- update(m5.lme2, method = "REML")
+fixef(m5.lme2)
+```
+
+Based on the estimated effects, (1) female would have lower BMD than male; (2) the ranking of race effects is race4 < race2 < race3 < race1; (3) scanner Type 2 would have higher BMD than Type 1; (4) higher `bmibl` is associated with higher BMD; (5) higher `il6bl` is associated with lower BMD. There is no interaction among the covariates in the selected model, so all of these effects are independent.
+
+
+```{r output.lines = c(6:9)}
+summary(m5.lme2)
+intervals(m5.lme2)$reStruct
+(2.504619e-06)^2 / ((2.504619e-06)^2 + 0.1223433^2)
+```
+
+The variability in BMD that is due to the clinic random effect is 4.191051e-10, very small.
+
+\newpage
+
+## Appendix
+
+### Figures
+```{r fig-sub, echo = FALSE, fig.cap='Model Diagnostics', fig.subcap=c('\\label{fig:fig1}residual plot of m.lme4', '\\label{fig:fig2}qqnorm of residuals', '\\label{fig:fig3}qqnorm of random effects'), out.width='.33\\linewidth', fig.asp=1, fig.ncol = 3}
+plot(m.lme4, id = 0.01)
+qqnorm(m.lme4)
+qqnorm(m.lme4, form = ~ ranef(.))
+```
+
+
+
+```{r echo=FALSE, out.width="50%", fig.align = "center", fig.cap="\\label{fig:figs}Scatter Plot Age vs. np.chg"}
+include_graphics("images/scatter_age_np.pdf")
+```

@@ -1,0 +1,17 @@
+base
+carData
+car
+knitr
+gmodels
+MASS
+dplyr
+mvtnorm
+survival
+TH.data
+multcomp
+nlme
+lattice
+faraway
+geepack
+Matrix
+lme4

@@ -1,0 +1,175 @@
+---
+title: "\\vspace{-1.2in} 2009 Q2"
+author: "November"
+header-includes:
+- \usepackage{fancyhdr}
+- \pagestyle{fancy}
+- \fancyhead[CO]{November}
+- \usepackage{float}
+- \usepackage{subfig}
+output: pdf_document
+geometry: "left = 0.5in, right = 0.5in, top = 1in, bottom = 1in"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, cache = TRUE, fig.pos = 'H')
+# set path to current working directory
+setwd(dirname(rstudioapi::getActiveDocumentContext()$path))
+# used for dealing with figures and output control
+library(knitr) 
+# used to control the output printing, adapted from the post: https://community.rstudio.com/t/showing-only-the-first-few-lines-of-the-results-of-a-code-chunk/6963
+hook_output <- knit_hooks$get("output")
+knit_hooks$set(output = function(x, options) {
+  lines <- options$output.lines
+  if (is.null(lines)) {
+    return(hook_output(x, options))  # pass to default hook
+  }
+  x <- unlist(strsplit(x, "\n"))
+  more <- "..."
+  if (length(lines)==1) {        # first n lines
+    if (length(x) > lines) {
+      # truncate the output, but add ....
+      x <- c(head(x, lines), more)
+    }
+  } else {
+    x <- c(more, x[lines], more)
+  }
+  # paste these lines together
+  x <- paste(c(x, ""), collapse = "\n")
+  hook_output(x, options)
+})
+```
+
+
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+# packages used in this problem, copy this code block to Appendix.
+library(gmodels)
+library(MASS)
+library(car)
+library(dplyr)
+library(multcomp)
+```
+
+
+```{r}
+d <- read.table("http://users.stat.umn.edu/~wangx346/bmd.txt", header = T)
+# check types of the dataframe
+sapply(d, class)
+# factorize columns
+d <- within(d, {
+  gender <- as.factor(gender)
+  drug <- as.factor(drug)
+})
+d0 <- d[d$visit == 0, ]
+```
+
+```{r}
+options(contrasts = c("contr.treatment", "contr.poly"))
+median(d0$age)
+with(d0, scatter.smooth(x=age, y=bmd))
+m <- lm(bmd ~ (gender + smoking + diabetes + I(age-57) + I((age-57)^2))^2, 
+        data = d0)
+Anova(m, type=2)
+
+m2 <- step(m, trace=0)
+Anova(m2, type=2)
+anova(m, m2)
+
+m3 <- lm(bmd ~ gender + I(age-57) + I((age-57)^2), data = d0)
+m4 <- lm(bmd ~ gender + I(age-57), data = d0)
+anova(m4, m3, m2)
+
+par(mfrow = c(2, 2))
+plot(m3)
+par(mfrow = c(1, 1))
+boxcox(m3)
+
+Anova(m3)
+summary(m3)
+Anova(m4)
+```
+
+## (b)
+```{r}
+
+```
+
+(Note: For clarity of the report, part of the output results are hidden. And the utilized packages are as shown in the Appendix.)
+
+Reminder
+
+- Read through the problem, understand the problem, write down the solution sketch and highlight note, check understanding, then start coding.
+- If there are covariates, start with plotting scatter plots.
+
+
+
+
+Checklist
+
+(1) Randomized or observational? Fit an adjusted or unadjusted model?
+(2) Balanced or unbalanced?
+(3) Data preprocessing. Factorization.
+(4) For change from baseline problems, do remember to remove the baseline observation.
+(2) `contr.sum` or `contr.treatment`? If 2^k factorial, we have to use `contr.sum`. 
+(3) Fit a large model, check model assumptions: typical 4 plots, residual plots, qqnorm for error, qqnorm for random effects, boxcox for transformation. If specified, check outliers. Check P17.1 in the assignments.R for fancy plots. But note that we need to refit the model and check whether the inference will change in order to determine outliers.
+(4) Correlation structure? Which response to use? Interaction and polynomial terms? Random slope or random intercept? Try and use model diagnostics to help choose.
+(4) If there are covariates, plot the scatter plot of the response vs. covariate. Check lecture code Chapter 17. Center the covariate for better interpretation.
+(5) `anova()` or `Anova(, type = 2)`?
+(6) Multiple comparison. Use `glht()`, use `linear.contrast()` and `fit.contrast()` to check. If using `intervals()`, then the contrast option needs to be `contr.treatment`.
+(7) Copy the library code block to the appendix.
+(8) Follow-up or use diff?
+(9) If possible, plot fitted to check the goodness of the model.
+(10) Always use `REML` to make inference.
+(11) Do not factorized `fu`.
+(12) Check previous problems to guide writing.
+(13) Model selection: interaction terms, quadratic terms, all two-way interactions, 3rd-order terms, center covariates, random slope/intercept, correlation structure. AIC, or manual. 
+(14) Show all your findings and considerations, let the graders know your understandings.
+(15) Interaction plot can be obtained by `interaction.plot` or `emmip`.
+(16) Try both adjusted and unadjusted models.
+(17) For continuous covariates, try 3rd-order terms and start with a large model with all possible interactions if allowed.
+
+
+Notes
+(1) `Anova(type=2)` means independent effect.
+(2) We can treat `month` as factor or numerics for variance reduction. Factor is more general. And if we want to try random slope, then we need to use numerics.
+
+As shown in Figure \ref{fig:fig1} in Appendix, there is a non-linear relationship between `age` and `np.chg`, so I include the quadratic term. Also, for easier interpretation, I center `age` around 40.
+
+
+```{r output.lines = c(2:26)}
+
+```
+
+\newpage
+
+## Packages
+
+All R packages used in this problem are listed below.
+```{r eval=FALSE}
+library(gmodels)
+library(MASS)
+library(car)
+library(dplyr)
+```
+
+
+## Appendix
+
+### Figures
+
+```{r fig-sub, echo = FALSE, fig.cap='Model Diagnostics', fig.subcap=c('\\label{fig:fig1}residual plot of m.lme4', '\\label{fig:fig2}qqnorm of residuals', '\\label{fig:fig3}qqnorm of random effects'), out.width='.33\\linewidth', fig.asp=1, fig.ncol = 3}
+plot(rnorm(10))
+qqnorm(rnorm(10))
+qqnorm(rnorm(10))
+# 
+# plot(m.lme)
+# qqnorm(residuals(m.lme), main = "QQ plot for residuals")
+# qqline(residuals(m.lme))
+# qqnorm(ranef(m.lme)$"(Intercept)", main = "QQ plot for the random intercept")
+# qqline(ranef(m.lme)$"(Intercept)")
+```
+
+
+```{r echo=FALSE, out.width="50%", fig.align = "center", fig.cap="\\label{fig:figs}Scatter Plot Age vs. np.chg"}
+include_graphics("images/scatter_age_np.pdf")
+```

@@ -1,0 +1,505 @@
+---
+title: "Simulation"
+author: "Yu Yang"
+date: "8/20/2020"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+setwd(dirname(rstudioapi::getActiveDocumentContext()$path))
+library(glmnet)
+library(ncvreg)
+library(glmvsd)
+library(SOIL)
+library(randomForest)
+library(faraway)
+library(car)
+library(leaps)
+library(gtools)
+library(xgboost)
+library(tidyverse)
+library(caret)
+library(ggplot2)
+library(MASS)
+library(dplyr)
+```
+
+## Functions used for analysis
+```{r}
+source('2009Q1.R')
+```
+
+
+## Read Data
+```{r}
+dataset <- read.csv("data/Cancerdata.csv")
+str(dataset)
+head(dataset)
+names(dataset)
+nrow(dataset)
+ncol(dataset)
+View(dataset)
+
+# change the response name to y
+names(dataset)[1] <- "y"
+
+# scale the data, get train and test, export data to a csv file
+# scaling is very important for python
+# check means and stds
+apply(dataset, 2, function(x) mean(x, na.rm=TRUE))
+apply(dataset, 2, function(x) sd(x, na.rm=TRUE))
+
+dataset.scaled <- data.frame(dataset)
+dataset.scaled[, 2:11] <- scale(dataset.scaled[, 2:11])
+write.csv(dataset.scaled, "data/dataset.csv")
+train <- dataset.scaled[1:285, ]
+test <- dataset.scaled[286:569, ]
+write.csv(train, "data/train.csv")
+write.csv(test, "data/test.csv")
+
+# generate 2nd-order data
+train2 <- order2.df(train)
+test2 <- order2.df(test)
+write.csv(train2, "data/train2.csv")
+write.csv(test2, "data/test2.csv")
+```
+
+## Data Exploration
+First, use `eda.ipynb` to do data exploration. 
+
+From the histogram, V11, V12, V13, V14, V16, V17, V18, V19, V20 are a bit skewed. Also, their ranges are different. qqplots have shown the same skewness. From the heatmap generated in python, we see some correlated groups: (V1, V6, V21, V26), (V2, V7, V22, V27), (V3, V8, V23, V28), (V4, V9, V24, V29), (V5, V10, V25, V30). Such a collinearity patterns suggest that regularized methods are required.
+
+About outliers, from the boxplots, we can see a few points are outside the IQR range. 
+
+
+## Check Histgoram, QQplot, Boxplot, and correlation
+```{r}
+hist.qq.box.plot(dataset)
+
+# corr
+(corr <- cor(dataset[, 2:11]))
+
+pairs(dataset[, 2:11])
+```
+
+
+
+## Check scatter plots and outliers, output the preprocessed data.
+```{r}
+lmod <- glm(y ~ ., family = binomial, data = train)
+summary(lmod)
+
+# diagnostics
+# bin residuals against predicted values
+diagdf <- train %>% 
+  mutate(residuals=residuals(lmod), linpred=predict(lmod)) %>%
+  group_by(cut(linpred, breaks=unique(quantile(linpred, (1:100)/101)))) %>%
+  summarise(residuals=mean(residuals), linpred=mean(linpred))
+ggplot(diagdf, aes(x=linpred, y=residuals)) + geom_point()
+
+# detect outliers
+halfnorm(residuals(lmod))
+halfnorm(cooks.distance(lmod))
+halfnorm(hatvalues(lmod))
+outlier.check(lmod)
+
+lmod <- glm(y ~ ., family = binomial, data = train[-c(21, 77), ])
+summary(lmod) # the inference changes a lot, so we need to remove 21, 77
+
+# get the first dev set
+dev <- train[-c(21, 77), ]
+```
+
+Use `summary()` and `drop1()` to select features. But note that when there are warning messages, even if some features are shown to be insignificant, it may become significant after removing some features. This has to do with multicolinearity. Drop features one by one.
+```{r}
+# use step(), summary() and drop1() to select features for order1 dataset
+m1 <- glm(y ~ ., family = binomial, data = dev)
+summary(m1)
+drop1(m1, test = "Chi")
+
+m2 <- step(m1, trace=0)
+summary(m2)
+drop1(m2, test = "Chi")
+anova(m2, m1)
+pchisq(deviance(m2) - deviance(m1), df.residual(m2) - df.residual(m1), 
+       lower.tail = FALSE)
+
+m3 <- update(m2, . ~ . - com)
+summary(m3)
+drop1(m3, test = "Chi")
+anova(m3, m2)
+pchisq(deviance(m3) - deviance(m2), df.residual(m3) - df.residual(m2), 
+       lower.tail = FALSE)
+
+```
+
+Use step(), summary() and drop1() to select features for order2 dataset. Note that the deviance here is very small, but the comparisons in terms of accuracy and auc are not good. 
+```{r}
+
+m1 <- glm(y ~ ., family = binomial, data = dev2)
+summary(m1)
+drop1(m1, test = "Chi")
+
+# AIC backward selection
+m2 <- step(m1, trace=0)
+summary(m2)
+drop1(m2, test = "Chi")
+anova(m2, m1)
+pchisq(deviance(m2) - deviance(m1), df.residual(m2) - df.residual(m1), 
+       lower.tail = FALSE)
+
+# BIC backward selection
+m3 <- step(m1, k = log(nrow(dev2)), trace=0)
+summary(m3)
+drop1(m3, test = "Chi")
+anova(m3, m1)
+pchisq(deviance(m2) - deviance(m1), df.residual(m2) - df.residual(m1), 
+       lower.tail = FALSE)
+
+
+# AIC backward selection
+m2 <- step(m1, trace=0, scope = list(upper = ~., 
+                                     lower= ~concp+area+per+rad+conc+tex+com))
+summary(m2)
+drop1(m2, test = "Chi")
+anova(m2, m1)
+pchisq(deviance(m2) - deviance(m1), df.residual(m2) - df.residual(m1), 
+       lower.tail = FALSE)
+
+cv.glm.compare(dev2, nrow(dev2)/8, 25, m2$formula)
+```
+
+
+
+
+## Create a comparison dataframe to save comparison results
+```{r}
+comp.df <- data.frame(matrix(0, ncol = 60, nrow = 18), 
+                      row.names = c('aic.acc', 'bic.acc', 'ridge.acc', 
+                                    'lasso.acc', 'mcp.acc', 'scad.acc', 
+                                    'xgb.acc', 'rf.acc', 'svm.acc', 
+                                    'aic.auc', 'bic.auc', 'ridge.auc', 
+                                    'lasso.auc', 'mcp.auc', 'scad.auc', 
+                                    'xgb.auc', 'rf.auc', 'svm.auc'))
+col.names <- vector(length = 60)
+for (i in 1:60) {
+  col.names[i] <- paste("Comp", i, sep="")
+}
+colnames(comp.df) <- col.names
+View(comp.df)
+
+# create a list to store comparison results
+comp <- rep(list(NULL), 20)
+```
+
+
+## Tune parameters for XGBoost
+Since the importance measure of XGBoost and Random Forest would be used later, I decide to run them first to get a basic idea about their goodness of fit and tune the parameters. So the next steps could be done systematically.
+
+Split the development set into training and testing, and have a basic idea about how XGBoost and Random Forest would work from graphics. Then, we can consider using these two models to provide feature importance measure.
+
+The performance of XGBoost is much better than that of Random Forest, and hence I may trust the result by XGBoost more.
+
+```{r}
+# tune parameters for XGBoost using dev data and check feature importance
+X_train <- xgb.DMatrix(as.matrix(dev %>% select(-y)))
+y_train <- as.factor(dev$y)
+(opt.param <- tune.xgb(X_train, y_train))
+
+# specify the optimal parameters
+xgb.params <- list(max_depth = 4, 
+             eta = 0.2, 
+             gamma = 0, 
+             colsample_bytree = 0.5, 
+             min_child_weight = 1, 
+             subsample = 0.8, 
+             objective = "binary:logistic")
+xgb.nrounds <- 50
+```
+
+## Get a basic idea about how different methods work graphically
+```{r}
+confmat.regularized(dev)
+
+confmat.abic(dev)
+
+confmat.xgb.rf(dev, xgb.params, xgb.nrounds)
+```
+
+
+## The 1st round of Model Selection
+
+First, consider no interactions and select models to deal with collinearity, then include interaction terms. Use cross-validation to choose the best model selection method among AIC, BIC, Ridge, LASSO, MCP, and SCAD. It turns out that BIC is the best model selection method.
+
+
+### When only consider single terms
+```{r}
+# the 1st comparison
+comp.df <- new.compare(comp.df, 1, dev, nrow(dev) / 8, 25, xgb.params, 
+                       xgb.nrounds)
+
+cv.regularized.compare(dev, nrow(dev)/8, 25)
+cv.abic.compare(dev, nrow(dev)/8, 25)
+cv.ml.compare(dev, nrow(dev)/8, 25, xgb.params, xgb.nrounds)
+
+# check the selected features by AIC, BIC and regularized methods
+select.features.abic(dev)
+select.features.regularized(dev)
+
+# check the feature importance given by SOIL, Random Forest and XGBoost
+check.importance(dev, xgb.params, xgb.nrounds)
+```
+
+
+### Consider all quadratic terms, no interaction terms
+```{r}
+# consider two-way interaction terms
+dev2 <- quadratic.df(dev)
+# the 2nd comparison
+comp.df <- new.compare(comp.df, 2, dev2, nrow(dev2) / 8, 25, xgb.params, 
+                       xgb.nrounds, abic = TRUE)
+
+select.features.abic(dev2)
+select.features.regularized(dev2)
+check.importance(dev2, xgb.params, xgb.nrounds)
+ 
+# use AIC to get the selected features and use cv.glm.compare to get an idea, note that we can not use the cv here for comparison, since it will then becomes an unfair comparison. We should just use it to get a basic idea.
+lmod <- glm(y ~ ., family=binomial, dev2) 
+summary(lmod)  # the deviance of this model is very small 
+drop1(lmod, test = "Chi")
+aic.mod <- step(lmod, k = 2, scope = list(upper=~.,lower=~1), 
+                  direction = 'both', trace=FALSE)
+summary(aic.mod)
+drop1(aic.mod, test = "Chi")
+
+anova(aic.mod, lmod)
+confmat.glm(dev2, aic.mod$formula)
+cv.glm.compare(dev2, nrow(dev2)/8, 25, aic.mod$formula)
+```
+
+
+### Consider all two-way interaction terms
+```{r}
+# consider two-way interaction terms
+dev3 <- order2.df(dev)
+# the 2nd comparison
+comp.df <- new.compare(comp.df, 3, dev3, nrow(dev3) / 8, 25, xgb.params, 
+                       xgb.nrounds, abic = FALSE)
+
+select.features.regularized(dev3)
+check.importance(dev3, xgb.params, xgb.nrounds)
+ 
+# use AIC to get the selected features and use cv.glm.compare to get an idea, note that we can not use the cv here for comparison, since it will then becomes an unfair comparison. We should just use it to get a basic idea.
+lmod <- glm(y ~ ., family=binomial, dev3)
+aic.mod <- step(lmod, k = 2, scope = list(upper=~.,lower=~1), 
+                  direction = 'both', trace=FALSE)
+summary(aic.mod)
+drop1(aic.mod, test = "Chi")
+
+anova(aic.mod, lmod)
+confmat.glm(dev2, aic.mod$formula)
+cv.glm.compare(dev2, nrow(dev2)/8, 25, aic.mod$formula)
+```
+
+
+## 2nd round of feature selection
+The first round is to help us determine the candidate of features, namely, do a first round of selection to reduce the variance in estimation.
+
+From the previous analysis, we found that V4, 8, 11, 12, 13, 14, 17, 18, 20, 22, 27, 28 should be considered.
+
+Since we are doing a finer comparison, we should increase the validation size.
+```{r}
+# start with single terms
+dev4 <- dev3 %>% select(y, rad, tex, per, area, smo, com, conc, concp, sym, 
+                        fra, area.conc, rad.conc, rad.concp, rad.area, 
+                        concp.2, tex.per, rad.tex, area.concp, tex.sym, 
+                        per.area, smo.conc, rad.per, conc.concp, per.conc, 
+                        conc.2, per.concp)
+# the 3rd comparison
+comp.df <- new.compare(comp.df, 4, dev4, nrow(dev4) / 5, 25, xgb.params, 
+                       xgb.nrounds, abic = T)
+
+# export data to a csv file
+write.csv(comp.df[, 1:4], "data/simulation_comparison.csv")
+```
+
+
+
+## Check the reliability of feature selection
+```{r}
+x <- as.matrix(dev[, -which(names(dev) %in% c("y"))])
+y <- dev$y
+
+model_check <- rep(0, 30)
+model_check[c(2, 4, 6, 7, 8)] <- 1
+model_check
+v_BIC <- glmvsd(x, y,
+                model_check = model_check,
+                family = "binomial", method = "union",
+                weight_type = "BIC", prior = TRUE)
+v_BIC
+
+ins_seq <- stability.test(x, y, method = "seq",
+                          penalty = "LASSO", nrep = 100,
+                          remove = 0.1, tau = 0.2, nfolds = 5)
+
+ins_seq
+
+ins_bs <- stability.test(x, y, method = "bs",
+                         penalty = "LASSO", nrep = 100,
+                         remove = 0.1, tau = 0.2, nfolds = 5)
+
+ins_bs
+
+ins_per <- stability.test(x, y, method = "per",
+                          penalty = "LASSO", nrep = 100,
+                          remove = 0.1, tau = 0.1, nfolds = 5)
+
+ins_per
+
+ins_per <- stability.test(x, y, method = "per",
+                          penalty = "MCP", nrep = 100,
+                          remove = 0.1, tau = 0.1, nfolds = 5)
+
+ins_per
+
+ins_per <- stability.test(x, y, method = "per",
+                          penalty = "SCAD", nrep = 100,
+                          remove = 0.1, tau = 0.1, nfolds = 5)
+
+ins_per
+```
+
+
+
+
+## Check residuals again
+
+```{r}
+dev.final <- quadratic.df(train[-c(21, 77), ])
+glm.mod <- glm(y ~ ., family=binomial, dev.final)
+summary(glm.mod)
+drop1(glm.mod, test = "Chi")
+
+# check outliers
+diagdf <- dev.final %>% 
+  mutate(residuals=residuals(glm.mod), linpred=predict(glm.mod)) %>% 
+  group_by(cut(linpred, breaks=unique(quantile(linpred, (1:50)/51)))) %>%
+  summarise(residuals=mean(residuals), linpred=mean(linpred))
+plot(residuals ~ linpred, diagdf, xlab="linear predictor")
+
+outlier.check(glm.mod)
+
+# try removing 103
+dev.final <- quadratic.df(train[-c(21, 77, 146, 107), ])
+glm.mod <- glm(y ~ ., family=binomial, dev.final)
+summary(glm.mod)
+drop1(glm.mod, test = "Chi")
+outlier.check(glm.mod)
+```
+
+### 3rd round of feature selection
+```{r}
+dev.final <- quadratic.df(train[-c(21, 77, 146, 107), ])
+# try regsubset to do exhaustive search
+x <- as.matrix(dev.final[, -which(names(dev.final) %in% c("y"))])
+y <- dev.final$y
+reg.all<-regsubsets(x,y,nvmax=10) # the default gives the best model for each dimension
+
+reg.summary<-summary(reg.all)
+names(reg.summary)
+
+which.max(reg.summary$rsq)
+which.max(reg.summary$adjr2)
+which.min(reg.summary$rss)
+which.min(reg.summary$cp)
+which.min(reg.summary$bic)
+
+coef(reg.all,id=6) # coefficient of the indexed model on the list
+
+# best from regsubset
+glm.form <- y ~ rad + tex + area + concp + area.2 + conc.2
+cv.glm.compare(dev.final, round(nrow(dev.final) / 5), 25, glm.form)
+glm.mod <- glm(glm.form, family=binomial, dev.final)
+summary(glm.mod)
+outlier.check(glm.mod)
+
+
+# should also try AIC/BIC, 
+# if deviance so small, be careful!
+```
+
+
+# Prediction
+
+For prediction, it would be fine to just use the original data.
+
+## Use LOO to estimate the model accuracy
+```{r}
+# final model
+glm.mod.form <- y ~ rad + tex + area + concp + I(area^2) + I(conc^2)
+# model by AIC
+select.features.abic(train[-c(21, 77, 146, 107), ])$aic.mod
+aic.mod.form <- y ~ rad + tex + area + smo + com + concp + sym
+# model by BIC
+select.features.abic(train[-c(21, 77, 146, 107), ])$bic.mod
+bic.mod.form <- y ~ rad + tex + area + smo + concp + sym
+# model by LASSO
+select.features.regularized(quadratic.df(train[-c(21, 77, 146, 107), ]))$lasso.features
+lasso.mod.form <- y ~ rad + tex + smo + concp + sym + I(tex^2)
+
+# ridge model
+ridge.data <- order2.df(train[-c(21, 77, 146, 107), ])
+x <- as.matrix(ridge.data[, -which(names(ridge.data) %in% c("y"))])
+y <- ridge.data$y
+cv.out <- cv.glmnet(x,y,family="binomial",alpha=0,nfold=10)
+(ridge.lambda <- cv.out$lambda.1se)
+  
+# combine the prediction from lm, bic on dev, and lasso, mcp on dev9
+system.time(loo.avg.results <- loo.avg(train[-c(21, 77, 146, 107), ], 
+      c(glm.mod.form, aic.mod.form, bic.mod.form, lasso.mod.form), 
+      c('glm', 'aic', 'bic', 'lasso'), 
+      ridge.data, ridge.lambda, xgb.params, xgb.nrounds))
+
+loo.avg.results
+```
+
+## Make final prediction
+```{r}
+View(test.original)
+apply(dev.original, 2, function(x) mean(x, na.rm=TRUE))
+apply(test.original, 2, function(x) mean(x, na.rm=TRUE))
+
+apply(dev.original, 2, function(x) sd(x, na.rm=TRUE))
+apply(test.original, 2, function(x) sd(x, na.rm=TRUE))
+
+ridge.newdata <- order2.df(test)
+
+pred <- pred.avg(train[-c(21, 77, 146, 107), ], test,
+      c(glm.mod.form, aic.mod.form, bic.mod.form, lasso.mod.form), 
+      c('glm', 'aic', 'bic', 'lasso'), 
+      ridge.data, ridge.newdata, ridge.lambda, xgb.params, xgb.nrounds)
+accuracy_score(pred[, 9], c(rep(1, 110), rep(0, 174)))
+
+save(pred, file = 'data/prediction.rda')
+```
+
+
+## Debug
+
+```{r}
+rf.mod <- randomForest(as.factor(y) ~ ., data = dev)
+rf.probpred <- predict(rf.mod, newdata = dev, type = "prob")[, 2]
+rf.pred <- as.numeric(predict(rf.mod, newdata = dev))-1
+
+svm.mod <- svm(formula = as.factor(y) ~ ., data = dev, 
+               type = 'C-classification', kernel = 'linear', 
+               probability = TRUE)
+svm.pred <- as.numeric(predict(svm.mod, newdata = dev, 
+                               probability = TRUE))-1
+svm.probpred <- as.data.frame(attr(svm.pred, "probabilities"))$`1`
+
+cv.glm.compare(dev, nrow(dev)/7, 25, glm.forms = c(y~., y~.^2), 
+               glm.names = c('order`', 'order2'))
+```

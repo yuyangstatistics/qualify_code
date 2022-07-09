@@ -1,0 +1,200 @@
+---
+title: "\\vspace{-1.2in} 2017 Applied Exam Q2"
+author: "November"
+header-includes:
+- \usepackage{fancyhdr}
+- \pagestyle{fancy}
+- \fancyhead[CO]{November}
+- \usepackage{float}
+- \usepackage{subfig}
+output: pdf_document
+geometry: "left = 0.5in, right = 0.5in, top = 1in, bottom = 1in"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, cache = TRUE, fig.pos = 'H')
+# set path to current working directory
+setwd(dirname(rstudioapi::getActiveDocumentContext()$path))
+# used for dealing with figures and output control
+library(knitr) 
+# used to control the output printing, adapted from the post: https://community.rstudio.com/t/showing-only-the-first-few-lines-of-the-results-of-a-code-chunk/6963
+hook_output <- knit_hooks$get("output")
+knit_hooks$set(output = function(x, options) {
+  lines <- options$output.lines
+  if (is.null(lines)) {
+    return(hook_output(x, options))  # pass to default hook
+  }
+  x <- unlist(strsplit(x, "\n"))
+  more <- "..."
+  if (length(lines)==1) {        # first n lines
+    if (length(x) > lines) {
+      # truncate the output, but add ....
+      x <- c(head(x, lines), more)
+    }
+  } else {
+    x <- c(more, x[lines], more)
+  }
+  # paste these lines together
+  x <- paste(c(x, ""), collapse = "\n")
+  hook_output(x, options)
+})
+```
+
+
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+# packages used in this problem, copy this code block to Appendix.
+library(MASS)
+library(ggplot2)
+library(rsm)
+```
+
+## (i)
+```{r}
+d <- read.csv("2017QualDataQ2.csv", header = T)
+code <- function(x) {
+  y <- x
+  y[x == min(x)] <- -1
+  y[x == max(x)] <- 1
+  y[x > min(x) & x < max(x)] <- 0
+  y
+}
+d <- within(d, {
+  Design <- as.factor(Design)
+  Machine <- as.factor(Machine)
+  block <- as.factor(block)
+  cTime <- code(Time)
+  cP <- code(P)
+  cTemp <- code(Temp)
+  y.penal <- ifelse(Effort <= 4, Strength, 0)
+})
+```
+
+
+Test whether `Design` interacts with the three settings. It shows that we can include `Design` as additive in the model.
+```{r output.lines = 7:9}
+m1.1 <- lm(Strength ~ block + Machine + Design * (cTime + cP + cTemp)^2 + 
+             Design * (I(cTime^2) + I(cP^2) + I(cTemp^2)), data = d)
+m1.2 <- lm(Strength ~ block + Machine + Design + (cTime + cP + cTemp)^2 + 
+             (I(cTime^2) + I(cP^2) + I(cTemp^2)), data = d)
+anova(m1.1, m1.2)
+```
+
+Now, use `{rsm}` to fit the response surface model.
+
+```{r output.lines = 20:30}
+m1 <- rsm(Strength ~ block + Machine + Design + FO(cTime, cP, cTemp), 
+          data = d)
+summary(m1)
+```
+
+```{r output.lines = c(6:19, 26:38)}
+m2 <- rsm(Strength ~ block + Machine + Design + SO(cTime, cP, cTemp), 
+          data = d)
+summary(m2)
+```
+
+```{r}
+m3 <- rsm(Strength ~ block + Machine + Design + FO(cTime, cP, cTemp) + 
+            PQ(cTime, cTemp), data = d)
+summary(m3)
+```
+
+The estimated coefficient for `Design2` is negative, suggesting that at the same level of the covariates, Design2 has smaller strength. The contour plots suggest border would give larger strength. Use grid search to find the optimal setting, and it gives the same result. `cTemp=-1, cTime=1, cP=1, Design=1` would provide the strongest seal. From the contour plot, we can see no big difference between the machines. 
+
+`cTime` and `cTemp` affects the strength quadratically, while `cP` has linear influence. 
+
+
+```{r}
+# grid search
+newdata1 <- expand.grid(cTemp = seq(-1, 1, by = 0.1), 
+                        cTime = seq(-1, 1, by = 0.1), 
+                        cP = seq(-1, 1, by = 0.1))
+n <- dim(newdata1)[1]
+newdata2 <- data.frame(Design = rep("1", n), 
+                       block = rep("1", n), 
+                       Machine = rep("1", n))
+newdata <- cbind(newdata1, newdata2)
+pred <- predict(m3, newdata)
+ind <- which.max(pred)
+newdata[ind, ]
+pred[ind]
+```
+
+
+## (ii)
+As shown in (i), the first-order model doesn't fit well, and in order to fit a second-order model, we need more points, both axial and center points.
+
+## (iii)
+As shown in Figure \ref{fig:effort-scatter} in Appendix, for Design 2, Effort is acceptable for whatever `Strength`. So I would recommend the same setting as in (i) to achieve strong seals with effort $\leq 4$.
+
+
+## (iv)
+```{r}
+m4 <- rsm(y.penal ~ block + Machine + Design + SO(cTime, cP, cTemp), 
+          data = d)
+```
+
+
+\newpage
+
+## Packages
+
+All R packages used in this problem are listed below.
+```{r eval=FALSE}
+library(gmodels)
+library(MASS)
+library(car)
+library(dplyr)
+```
+
+
+## Appendix
+
+### Figures
+
+```{r echo = FALSE, fig.cap='Scatter plots', out.width='.33\\linewidth', fig.subcap=c('cTime vs Strength', 'cP vs Strength', 'cTemp vs Strength'), fig.asp=1, fig.ncol = 3}
+# Draw scatter plot
+ggplot(d, aes(x=cTime, y=Strength)) + geom_point()
+ggplot(d, aes(x=cP, y=Strength)) + geom_point() 
+ggplot(d, aes(x=cTemp, y=Strength)) + geom_point()
+```
+
+```{r echo = FALSE, fig.cap='Model Diagnostics', out.width='.49\\linewidth', fig.subcap=c('Diagnostics for m1.1', 'Diagnostics for m3'), fig.asp=1, fig.ncol = 2}
+par(mfrow = c(2, 2))
+plot(m1.1, which = c(1, 2, 3))
+boxcox(aov(m1.1))
+par(mfrow = c(1, 1))
+
+par(mfrow = c(2, 2))
+plot(m3, which = c(1, 2, 3))
+boxcox(aov(m3))
+par(mfrow = c(1, 1))
+```
+
+
+
+```{r echo = FALSE, fig.cap='Contour Plots: Different Designs', fig.width=10, fig.height=6}
+par(mfrow = c(2, 3))
+contour(m3, ~ cTime + cP + cTemp, at = list(Design = "1", Machine = "1"))
+contour(m3, ~ cTime + cP + cTemp, at = list(Design = "2", Machine = "1"))
+par(mfrow = c(1, 1))
+```
+
+```{r echo = FALSE, fig.cap='Contour Plots: Different Machines', fig.width=10, fig.height=6}
+par(mfrow = c(2, 3))
+contour(m3, ~ cTime + cP + cTemp, at = list(Design = "1", Machine = "1"))
+contour(m3, ~ cTime + cP + cTemp, at = list(Design = "1", Machine = "2"))
+par(mfrow = c(1, 1))
+```
+
+```{r echo=FALSE, fig.cap="\\label{fig:effort-scatter}Strength vs Effort", fig.height=3, message=FALSE}
+ggplot(d, aes(x=Strength, y=Effort, shape=Design, color=Design)) + 
+  geom_point() + geom_smooth(method = lm, se = FALSE)
+```
+
+```{r echo = FALSE, fig.cap='Contour Plots for m4', fig.width=10, fig.height=6}
+par(mfrow = c(2, 3))
+contour(m4, ~ cTime + cTemp + cP, at = list(Design = "1", Machine = "1"))
+contour(m4, ~ cTime + cTemp + cP, at = list(Design = "2", Machine = "1"))
+par(mfrow = c(1, 1))
+```

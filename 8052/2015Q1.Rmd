@@ -1,0 +1,141 @@
+---
+title: "\\vspace{-1in} 2015 Q1"
+author: "codename"
+header-includes:
+- \usepackage{fancyhdr}
+- \pagestyle{fancy}
+- \fancyhead[CO]{codename}
+- \usepackage{float}
+output: pdf_document
+geometry: "left = 0.5in, right = 0.5in, top = 1in, bottom = 1in"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, cache = TRUE)
+# set path to current working directory
+setwd(dirname(rstudioapi::getActiveDocumentContext()$path))
+# used for dealing with figures and output control
+library(knitr) 
+# used to control the output printing, adapted from the post: https://community.rstudio.com/t/showing-only-the-first-few-lines-of-the-results-of-a-code-chunk/6963
+hook_output <- knit_hooks$get("output")
+knit_hooks$set(output = function(x, options) {
+  lines <- options$output.lines
+  if (is.null(lines)) {
+    return(hook_output(x, options))  # pass to default hook
+  }
+  x <- unlist(strsplit(x, "\n"))
+  more <- "..."
+  if (length(lines)==1) {        # first n lines
+    if (length(x) > lines) {
+      # truncate the output, but add ....
+      x <- c(head(x, lines), more)
+    }
+  } else {
+    x <- c(more, x[lines], more)
+  }
+  # paste these lines together
+  x <- paste(c(x, ""), collapse = "\n")
+  hook_output(x, options)
+})
+```
+
+```{r message=FALSE, warning=FALSE}
+library(nlme)
+library(car)
+library(gmodels)
+library(cfcdae)
+library(dplyr)
+library(mgcv)
+```
+
+## (a)
+```{r}
+### Data Preprocessing
+d <- read.table('fev1.txt', header = T)
+d <- within(d, {
+  grp <- as.factor(grp)
+  gender <- as.factor(gender)
+  fev1.chg <- fev1 - fev1.0
+})
+d <- d %>% filter(year != 0)
+
+### Simple estimate of treatment effect without adjustment to other covariates
+ma.lme <- lme(fev1.chg ~ grp, random = ~ 1|ID, data = d)
+Anova(ma.lme)
+coeff.matrix <- rbind("1 vs 2" = c(1, -1, 0, 0),
+                      "1 vs 3" = c(1, 0, -1, 0), 
+                      "1 vs 4" = c(1, 0, 0, -1))
+fit.contrast(ma.lme, "grp", coeff = coeff.matrix, conf.int = 1 - (0.05/3))
+```
+
+## (b)
+```{r}
+getVarCov(ma.lme, type = "random.effects")
+getVarCov(ma.lme, individuals = "1", type = "conditional")
+```
+
+## (c)
+```{r output.lines = c(4:13, 30:32)}
+mc.lme1 <- lme(fev1.chg ~ (grp + I(age - 60) + I((age - 60)^2) + 
+                            gender + smoking + bpmeds + fev1.0)^2 + year, 
+               random = ~ year|ID, data = d)
+Anova(mc.lme1)
+```
+
+```{r}
+mc.lme2 <- update(mc.lme1, method = "ML")
+mc.lme3 <- update(mc.lme2, fixed = fev1.chg ~ grp * I(age - 60) + fev1.0 + 
+                    year + smoking * bpmeds)
+anova(mc.lme2, mc.lme3)
+mc.lme4 <- update(mc.lme3, method = "REML")
+mc.lme5 <- update(mc.lme4, random = ~ 1|ID)
+anova(mc.lme4, mc.lme5)
+Anova(mc.lme5)
+```
+
+
+```{r}
+d <- within(d, {
+  dose <- as.ordered(dose)
+})
+mc.lme6 <- lme(fev1.chg ~ dose * I(age - 60) + fev1.0 + year + 
+                smoking * bpmeds, random = ~ 1|ID, data = d)
+```
+
+```{r output.lines = c(11:25)}
+summary(mc.lme6)
+```
+
+```{r}
+d <- within(d, {
+  dose <- as.numeric(dose)
+})
+mc.lme7 <- lme(fev1.chg ~ dose + I(dose^2) + I(dose^3) + smoking * bpmeds + 
+                 fev1.0 + year, random = ~ 1|ID, data = d)
+Anova(mc.lme7)
+```
+
+```{r output.lines = c(1:21)}
+summary(mc.lme7)
+```
+
+The effect of drug doesn't differ by age, gender, smoking status, use of blood pressure medication, or baseline level of FEV1. The effect of the drug does is cubic, not linear. ...
+
+## (d)
+```{r}
+d2 <- d %>% filter(year == 1, grp %in% c(2, 4))
+m.lm <- lm(fev1.chg ~ grp, data = d2)
+summary(m.lm)$sigma
+power.t.test(n = NULL, delta = 0.2, sd = 1.32, sig.level = 0.05, power = 0.8, 
+             type = "two.sample", alternative = "two.sided")
+```
+
+
+\newpage
+
+## Appendix
+
+### Figures
+```{r echo=FALSE, out.width="50%", fig.align = "center", fig.cap="\\label{fig:figs}Scatter Plot Age vs. np.chg"}
+include_graphics("images/template.pdf")
+```

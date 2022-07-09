@@ -1,0 +1,512 @@
+---
+title: "Simulation"
+author: "Yu Yang"
+date: "8/20/2020"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+setwd(dirname(rstudioapi::getActiveDocumentContext()$path))
+library(glmnet)
+library(ncvreg)
+library(glmvsd)
+library(SOIL)
+library(randomForest)
+library(faraway)
+library(car)
+library(leaps)
+library(gtools)
+library(xgboost)
+library(tidyverse)
+library(caret)
+library(ggplot2)
+library(MASS)
+library(dplyr)
+```
+
+## Functions used for analysis
+```{r}
+source('sim_functions.R')
+```
+
+
+## Read Data
+```{r}
+load('simulated.rda')
+dataset <- data.frame(simulated)
+str(dataset)
+head(dataset)
+names(dataset)
+nrow(dataset)
+ncol(dataset)
+View(dataset)
+
+# scale the data, get train and test, export data to a csv file
+# scaling is very important for python
+write.csv(dataset, "data/simulated.csv")
+dataset.scaled <- data.frame(dataset)
+dataset.scaled[, 1:30] <- scale(dataset.scaled[, 1:30])
+train <- dataset.scaled[1:300, ]
+test <- dataset.scaled[301:500, ]
+write.csv(train, "data/train.csv")
+write.csv(test, "data/test.csv")
+
+# generate 2nd-order data
+train2 <- order2.model.matrix(train)$df
+test2 <- order2.model.matrix(test)$df
+write.csv(train2, "data/train2.csv")
+write.csv(test2, "data/test2.csv")
+```
+
+## Data Exploration
+First, use `eda.ipynb` to do data exploration. 
+
+From the histogram, V11, V12, V13, V14, V16, V17, V18, V19, V20 are a bit skewed. Also, their ranges are different. qqplots have shown the same skewness. From the heatmap generated in python, we see some correlated groups: (V1, V6, V21, V26), (V2, V7, V22, V27), (V3, V8, V23, V28), (V4, V9, V24, V29), (V5, V10, V25, V30). Such a collinearity patterns suggest that regularized methods are required.
+
+About outliers, from the boxplots, we can see a few points are outside the IQR range. 
+
+
+## Check Histgoram, QQplot, Boxplot, and correlation
+```{r}
+# check means and stds
+apply(dataset, 2, function(x) mean(x, na.rm=TRUE))
+apply(dataset, 2, function(x) sd(x, na.rm=TRUE))
+
+hist.qq.box.plot(dataset)
+
+# corr
+(corr <- cor(dataset[, 1:30]))
+
+pairs(dataset[, c(11, 12, 13, 14, 15, 21, 22, 23, 24, 25)])
+```
+
+
+## Try subsetting the dataset and output to python for analysis.
+```{r}
+dev1 <- order2.model.matrix(train[, c(2, 4, 6, 7, 8, 31)])$df
+write.csv(dev1, "data/dev1.csv")
+```
+
+
+
+
+## Check scatter plots and outliers, output the preprocessed data.
+```{r}
+rownames(train) <- NULL # reset index
+
+lmod <- glm(y ~ ., family = binomial, data = train)
+summary(lmod)
+
+# diagnostics
+# bin residuals against predicted values
+diagdf <- train %>% 
+  mutate(residuals=residuals(lmod), linpred=predict(lmod)) %>%
+  group_by(cut(linpred, breaks=unique(quantile(linpred, (1:100)/101)))) %>%
+  summarise(residuals=mean(residuals), linpred=mean(linpred))
+ggplot(diagdf, aes(x=linpred, y=residuals)) + geom_point()
+```
+
+## Create a comparison dataframe to save comparison results
+```{r}
+comp.df <- data.frame(matrix(0, ncol = 60, nrow = 16), 
+                      row.names = c('aic.acc', 'bic.acc', 'lasso.acc', 
+                                    'mcp.acc', 'scad.acc', 'xgb.acc', 
+                                    'rf.acc', 'svm.acc', 
+                                    'aic.auc', 'bic.auc', 'lasso.auc', 
+                                    'mcp.auc', 'scad.auc', 'xgb.auc', 
+                                    'rf.auc', 'svm.auc'))
+col.names <- vector(length = 60)
+for (i in 1:60) {
+  col.names[i] <- paste("Comp", i, sep="")
+}
+colnames(comp.df) <- col.names
+View(comp.df)
+```
+
+
+## Tune parameters for XGBoost
+Since the importance measure of XGBoost and Random Forest would be used later, I decide to run them first to get a basic idea about their goodness of fit and tune the parameters. So the next steps could be done systematically.
+
+Split the development set into training and testing, and have a basic idea about how XGBoost and Random Forest would work from graphics. Then, we can consider using these two models to provide feature importance measure.
+
+The performance of XGBoost is much better than that of Random Forest, and hence I may trust the result by XGBoost more.
+
+```{r}
+# tune parameters for XGBoost using dev data and check feature importance
+X_train <- xgb.DMatrix(as.matrix(dev %>% select(-y)))
+y_train <- as.factor(dev$y)
+(opt.param <- tune.xgb.reg(X_train, y_train))
+
+# specify the optimal parameters
+xgb.params <- list(max_depth = 2, 
+             eta = 0.2, 
+             gamma = 0, 
+             colsample_bytree = 0.9, 
+             min_child_weight = 1, 
+             subsample = 0.8, 
+             objective = "binary:logistic")
+xgb.nrounds <- 100
+```
+
+## Get a basic idea about how different methods work graphically
+```{r}
+confmat.regularized(train)
+
+confmat.abic(train)
+
+# plot.xgb.rf(dev, xgb.params, xgb.nrounds)
+```
+
+
+## The 1st round of Model Selection
+
+First, consider no interactions and select models to deal with collinearity, then include interaction terms. Use cross-validation to choose the best model selection method among AIC, BIC, Ridge, LASSO, MCP, and SCAD. It turns out that BIC is the best model selection method.
+
+
+### When only consider single terms
+```{r}
+# compare models
+dev = data.frame(train)
+(comp1.1 <- cv.abic.compare(dev, nrow(dev) / 8, 25))
+(comp1.2 <- cv.regularized.compare(dev, nrow(dev) / 8, 25))
+(comp1.3 <- cv.ml.compare(dev, round(nrow(dev) / 8), 25, 
+                          xgb.params, xgb.nrounds))
+comp.df[1:2, 1] <- comp1.1$Accuracy
+comp.df[9:10, 1] <- comp1.1$AUC
+comp.df[3:5, 1] <- comp1.2$Accuracy
+comp.df[11:13, 1] <- comp1.2$AUC
+comp.df[6:8, 1] <- comp1.3$Accuracy
+comp.df[14:16, 1] <- comp1.3$AUC
+
+
+# check the selected features by AIC, BIC and regularized methods
+select.features.abic(dev)
+select.features.regularized(dev)
+
+# check the feature importance given by SOIL, Random Forest and XGBoost
+check.importance(dev, xgb.params, xgb.nrounds)
+```
+
+### Consider all two-way interaction terms
+```{r}
+# consider two-way interaction terms
+dev2 <- order2.model.matrix(dev)$df
+# (comp2.1 <- cv.abic.compare(dev2, nrow(dev2) / 8, 25)) 
+(comp2.2 <- cv.regularized.compare(dev2, nrow(dev2) / 8, 25)) 
+(comp2.3 <- cv.ml.compare(dev2, nrow(dev2) / 8, 25, xgb.params, xgb.nrounds))
+comp.df[3:5, 2] = comp2.2$Accuracy
+comp.df[10:12, 2] <- comp2.2$AUC
+comp.df[6:7, 2] <- comp2.3$Accuracy
+comp.df[13:14, 2] <- comp2.3$AUC
+
+# select.features.abic(dev1)  # too large dimension size for step to work
+select.features.regularized(dev2)
+
+check.importance(dev2, xgb.params, xgb.nrounds)
+```
+
+
+## 2nd round of feature selection
+The first round is to help us determine the candidate of features, namely, do a first round of selection to reduce the variance in estimation.
+
+From the previous analysis, we found that V4, 8, 11, 12, 13, 14, 17, 18, 20, 22, 27, 28 should be considered.
+
+Since we are doing a finer comparison, we should increase the validation size.
+```{r}
+# start with single terms
+dev4 <- order2.model.matrix(dev[, c(2, 4, 6, 7, 8, 14, 20, 23, 31)])$df
+(comp3.1 <- cv.abic.compare(dev3, round(nrow(dev3) / 5), 25))
+(comp3.2 <- cv.regularized.compare(dev3, nrow(dev3) / 5, 25))
+(comp3.3 <- cv.ml.compare(dev3, nrow(dev3) / 5, 25, xgb.params, xgb.nrounds))
+
+comp.df[1:2, 3] <- comp3.1$Accuracy
+comp.df[8:9, 3] <- comp3.1$AUC
+comp.df[3:5, 3] = comp3.2$Accuracy
+comp.df[10:12, 3] <- comp3.2$AUC
+comp.df[6:7, 3] <- comp3.3$Accuracy
+comp.df[13:14, 3] <- comp3.3$AUC
+
+select.features.abic(dev3)
+select.features.regularized(dev3)
+check.importance(dev3, xgb.params, xgb.nrounds)
+
+# dev4: remove 14
+dev4 <- order2.model.matrix(dev[, c(2, 4, 6, 7, 8, 20, 23, 31)])$df
+(comp4.1 <- cv.abic.compare(dev4, round(nrow(dev4) / 5), 25))
+(comp4.2 <- cv.regularized.compare(dev4, nrow(dev4) / 5, 25))
+(comp4.3 <- cv.ml.compare(dev4, nrow(dev4) / 5, 25, xgb.params, xgb.nrounds))
+
+comp.df[1:2, 4] <- comp4.1$Accuracy
+comp.df[8:9, 4] <- comp4.1$AUC
+comp.df[3:5, 4] = comp4.2$Accuracy
+comp.df[10:12, 4] <- comp4.2$AUC
+comp.df[6:7, 4] <- comp4.3$Accuracy
+comp.df[13:14, 4] <- comp4.3$AUC
+
+select.features.abic(dev4)
+select.features.regularized(dev4)
+check.importance(dev4, xgb.params, xgb.nrounds)
+
+
+# dev5: remove 23
+dev5 <- order2.model.matrix(dev[, c(2, 4, 6, 7, 8, 20, 31)])$df
+(comp5.1 <- cv.abic.compare(dev5, round(nrow(dev5) / 5), 25))
+(comp5.2 <- cv.regularized.compare(dev5, nrow(dev5) / 5, 25))
+(comp5.3 <- cv.ml.compare(dev5, nrow(dev5) / 5, 25, xgb.params, xgb.nrounds))
+
+comp.df[1:2, 5] <- comp5.1$Accuracy
+comp.df[8:9, 5] <- comp5.1$AUC
+comp.df[3:5, 5] = comp5.2$Accuracy
+comp.df[10:12, 5] <- comp5.2$AUC
+comp.df[6:7, 5] <- comp5.3$Accuracy
+comp.df[13:14, 5] <- comp5.3$AUC
+
+select.features.abic(dev5)
+select.features.regularized(dev5)
+check.importance(dev5, xgb.params, xgb.nrounds)
+
+
+# dev6: remove 20
+dev6 <- order2.model.matrix(dev[, c(2, 4, 6, 7, 8, 31)])$df
+(comp6.1 <- cv.abic.compare(dev6, round(nrow(dev6) / 5), 25))
+(comp6.2 <- cv.regularized.compare(dev6, nrow(dev6) / 5, 25))
+(comp6.3 <- cv.ml.compare(dev6, nrow(dev6) / 5, 25, xgb.params, xgb.nrounds))
+
+comp.df[1:2, 6] <- comp6.1$Accuracy
+comp.df[8:9, 6] <- comp6.1$AUC
+comp.df[3:5, 6] = comp6.2$Accuracy
+comp.df[10:12, 6] <- comp6.2$AUC
+comp.df[6:7, 6] <- comp6.3$Accuracy
+comp.df[13:14, 6] <- comp6.3$AUC
+
+select.features.abic(dev6)
+select.features.regularized(dev6)
+check.importance(dev6, xgb.params, xgb.nrounds)
+
+
+# export data to a csv file
+write.csv(comp.df[, 1:6], "data/simulation_comparison.csv")
+```
+
+
+
+## Check the reliability of feature selection
+```{r}
+
+x <- as.matrix(dev[, -which(names(dev) %in% c("y"))])
+y <- dev$y
+
+model_check <- rep(0, 30)
+model_check[c(2, 4, 6, 7, 8)] <- 1
+model_check
+v_BIC <- glmvsd(x, y,
+                model_check = model_check,
+                family = "binomial", method = "union",
+                weight_type = "BIC", prior = TRUE)
+v_BIC
+
+ins_seq <- stability.test(x, y, method = "seq",
+                          penalty = "LASSO", nrep = 100,
+                          remove = 0.1, tau = 0.2, nfolds = 5)
+
+ins_seq
+
+ins_bs <- stability.test(x, y, method = "bs",
+                         penalty = "LASSO", nrep = 100,
+                         remove = 0.1, tau = 0.2, nfolds = 5)
+
+ins_bs
+
+ins_per <- stability.test(x, y, method = "per",
+                          penalty = "LASSO", nrep = 100,
+                          remove = 0.1, tau = 0.1, nfolds = 5)
+
+ins_per
+
+ins_per <- stability.test(x, y, method = "per",
+                          penalty = "MCP", nrep = 100,
+                          remove = 0.1, tau = 0.1, nfolds = 5)
+
+ins_per
+
+ins_per <- stability.test(x, y, method = "per",
+                          penalty = "SCAD", nrep = 100,
+                          remove = 0.1, tau = 0.1, nfolds = 5)
+
+ins_per
+```
+
+
+
+
+## 3rd round of feature selection
+
+From the comparison results above, I would finally select V2, V4, V6, V7, V8 these five variables.
+
+```{r}
+dev.final <- order2.model.matrix(dev[, c(2, 4, 6, 7, 8, 31)])$df
+glm.mod <- glm(y ~ ., family=binomial, dev.final)
+summary(glm.mod)
+drop1(glm.mod, test = "Chi")
+
+# check outliers
+diagdf <- dev.final %>% 
+  mutate(residuals=residuals(glm.mod), linpred=predict(glm.mod)) %>% 
+  group_by(cut(linpred, breaks=unique(quantile(linpred, (1:50)/51)))) %>%
+  summarise(residuals=mean(residuals), linpred=mean(linpred))
+plot(residuals ~ linpred, diagdf, xlab="linear predictor")
+
+outlier.check(glm.mod)
+
+# try removing 103
+glm.mod <- glm(y ~ ., family=binomial, dev.final[-103, ])
+summary(glm.mod)
+drop1(glm.mod, test = "Chi")
+outlier.check(glm.mod)
+
+# try removing 103, 267
+glm.mod <- glm(y ~ ., family=binomial, dev.final[-c(103, 267), ])
+summary(glm.mod)
+drop1(glm.mod, test = "Chi")
+outlier.check(glm.mod)
+
+# try removing 103, 267, 155
+glm.mod <- glm(y ~ ., family=binomial, dev.final[-c(103, 267, 155), ])
+summary(glm.mod)
+drop1(glm.mod, test = "Chi")
+outlier.check(glm.mod)
+
+dev.final <- dev.final[-c(103, 267, 155), ]
+
+# try regsubset to do exhaustive search
+x <- as.matrix(dev.final[, -which(names(dev.final) %in% c("y"))])
+y <- dev.final$y
+reg.all<-regsubsets(x,y,nvmax=20) # the default gives the best model for each dimension
+
+reg.summary<-summary(reg.all)
+names(reg.summary)
+
+which.max(reg.summary$rsq)
+which.max(reg.summary$adjr2)
+which.min(reg.summary$rss)
+which.min(reg.summary$cp)
+which.min(reg.summary$bic)
+
+coef(reg.all,id=9) # coefficient of the indexed model on the list
+
+# manually do some comparison
+glm.form <- y ~ V2 + V4 + V6 + V7 + V8 + V2.V4 + V2.V6 + V4.V6 + V4.V7 + V4.V8 + V6.V7 + V7.V8 + V4.2 + V6.2 + V7.2
+cv.glm.compare(dev.final, round(nrow(dev.final) / 5), 25, glm.form)
+glm.mod <- glm(glm.form, family = binomial, data = dev.final)
+summary(glm.mod)
+drop1(glm.mod, test = "Chi")
+
+# best from regsubset
+glm.form <- y ~ V2 + V4 + V6 + V7 + V8 + V4.V8 + V6.V7 + V7.V8 +  V7.2
+cv.glm.compare(dev.final, round(nrow(dev.final) / 5), 25, glm.form)
+
+```
+
+
+## Get the summary of the final model
+Since we did scaling before, need to note that we now need to go back to the original scale to estimate the coefficients.
+```{r}
+train.original <- dataset[1:300, ]
+rownames(train.original) <- NULL # reset index
+test.original <- dataset[301:500, ]
+
+# check the final model
+final.mod <- glm(y ~ V2 + V4 + V6 + V7 + V8 + V4*V8 + V6*V7 + V7*V8 +I(V7^2), 
+                 family = binomial, train.original[-c(103, 267, 155),])
+summary(final.mod)
+outlier.check(final.mod)
+
+# remove outlier again
+final.mod <- glm(y ~ V2 + V4 + V6 + V7 + V8 + V4*V8 + V6*V7 + V7*V8 +I(V7^2), 
+                 family = binomial, train.original[-c(103, 267, 155, 254),])
+summary(final.mod)
+outlier.check(final.mod)
+
+final.mod <- glm(y ~ V2 + V4 + V6 + V7 + V8 + V4*V8 + V6*V7 + V7*V8 +I(V7^2), 
+                 family = binomial, 
+                 train.original[-c(103, 267, 155, 254, 287),])
+summary(final.mod)
+outlier.check(final.mod)
+
+# fit the final model
+dev.original <- train.original[-c(103, 267, 155, 254, 287), ]
+
+final.mod <- glm(y ~ V2 + V4 + V6 + V7 + V8 + V4*V8 + V6*V7 + V7*V8 +I(V7^2), 
+                 family = binomial, dev.original)
+summary(final.mod)
+outlier.check(final.mod)
+confmat.glm(dev.original, 
+            y ~ V2 + V4 + V6 + V7 + V8 + V4*V8 + V6*V7 + V7*V8 +I(V7^2))
+write.csv(dev.original, "data/dev_final.csv")
+```
+
+# Prediction
+
+For prediction, it would be fine to just use the original data.
+
+## Use LOO to estimate the model accuracy
+```{r}
+# final model
+glm.mod.form <- y ~ V2 + V4 + V6 + V7 + V8 + V4*V8 + V6*V7 + V7*V8 +I(V7^2)
+# model by BIC
+select.features.abic(dev6[-c(103, 267, 155, 254, 287), ])$bic.mod
+bic.mod.form <- y ~ V2 + V4 + V6 + V7 + V8 + V2*V4 + V4*V8
+# model by LASSO
+select.features.regularized(dev4[-c(103, 267, 155, 254, 287), ])$lasso.features
+lasso.mod.form <- y ~ V2 + V4 + V6 + V7 + V8 + V20 + V2*V4 + V2*V23 + V4*V8 + 
+  V4*V20 + V4*V23 + V6*V20 + V6*V23 + V7*V8
+# model by MCP
+select.features.regularized(dev6[-c(103, 267, 155, 254, 287), ])$mcp.features
+mcp.mod.form <- y ~ V2 + V4 + V6 + V7 + V8 + V4*V8
+
+# model by SCAD
+select.features.regularized(dev6[-c(103, 267, 155, 254, 287), ])$scad.features
+scad.mod.form <- y ~ V2 + V4 + V6 + V7 + V8 + V4*V8
+
+# combine the prediction from lm, bic on dev, and lasso, mcp on dev9
+system.time(loo.avg.results <- loo.avg(dev.original, glm.mod.form, 
+                                       bic.mod.form, lasso.mod.form, 
+                                       mcp.mod.form))
+
+loo.avg.results
+```
+
+## Make final prediction
+```{r}
+View(test.original)
+apply(dev.original, 2, function(x) mean(x, na.rm=TRUE))
+apply(test.original, 2, function(x) mean(x, na.rm=TRUE))
+
+apply(dev.original, 2, function(x) sd(x, na.rm=TRUE))
+apply(test.original, 2, function(x) sd(x, na.rm=TRUE))
+
+pred <- pred.avg(dev.original, test.original, 
+                 glm.mod.form, bic.mod.form, lasso.mod.form, mcp.mod.form)
+
+
+save(pred, file = 'data/simulate_prediction.rda')
+```
+
+
+## Debug
+```{r}
+library(e1071) 
+  
+svc <- svm(formula = as.factor(y) ~ ., 
+                 data = dev, 
+                 type = 'C-classification', 
+                 kernel = 'linear', probability = TRUE)
+# Predicting the Test set results 
+y_pred = predict(classifier) 
+pred <- predict(svc, newdata= dev, probability = TRUE)
+as.data.frame(attr(pred, "probabilities"))$`1`
+table(pred, dev$y)
+```
+
+

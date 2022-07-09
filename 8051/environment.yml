@@ -1,0 +1,19 @@
+name: qualify
+dependencies:
+  - python=3.7
+  - numpy
+  - pandas
+  - scipy
+  - pip
+  - pip:
+    - notebook
+    - shap
+    - catboost
+    - lightgbm
+    - xgboost
+    - matplotlib
+    - statsmodels
+    - cvxopt
+    - feather-format
+    - pyreadr
+    - seaborn

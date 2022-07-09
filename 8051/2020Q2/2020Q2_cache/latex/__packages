@@ -1,0 +1,17 @@
+base
+knitr
+gmodels
+MASS
+carData
+car
+dplyr
+mvtnorm
+survival
+TH.data
+multcomp
+faraway
+nnet
+ggplot2
+reshape
+generalhoslem
+reshape2

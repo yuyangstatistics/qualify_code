@@ -1,0 +1,127 @@
+---
+title: "\\vspace{-1in} 2013 Q2"
+author: "codename"
+header-includes:
+- \usepackage{fancyhdr}
+- \pagestyle{fancy}
+- \fancyhead[CO]{codename}
+- \usepackage{float}
+output: pdf_document
+geometry: "left = 0.5in, right = 0.5in, top = 1in, bottom = 1in"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, cache = TRUE)
+# suppress the loading required packages messages
+suppressPackageStartupMessages(library(car))
+# used for dealing with figures and output control
+library(knitr) 
+# used to control the output printing, adapted from the post: https://community.rstudio.com/t/showing-only-the-first-few-lines-of-the-results-of-a-code-chunk/6963
+hook_output <- knit_hooks$get("output")
+knit_hooks$set(output = function(x, options) {
+  lines <- options$output.lines
+  if (is.null(lines)) {
+    return(hook_output(x, options))  # pass to default hook
+  }
+  x <- unlist(strsplit(x, "\n"))
+  more <- "..."
+  if (length(lines)==1) {        # first n lines
+    if (length(x) > lines) {
+      # truncate the output, but add ....
+      x <- c(head(x, lines), more)
+    }
+  } else {
+    x <- c(more, x[lines], more)
+  }
+  # paste these lines together
+  x <- paste(c(x, ""), collapse = "\n")
+  hook_output(x, options)
+})
+```
+
+
+```{r libraries, echo=TRUE}
+library(gmodels)
+library(MASS)
+# library(car)
+```
+
+## (a)
+
+Since the patients are randomized with treatment, it would fine to use a model without adjustment to compare the treatment effects.
+```{r}
+da <- read.table("http://users.stat.umn.edu/~wangx346/artstudy-widedata.txt", 
+                 header = T)
+
+da <- within(da, {
+  treat <- as.factor(treat)
+  country <- as.factor(country)
+  gender <- as.factor(gender)
+  np.chg <- np.8 - 0.5 * (np.0 + np.2)
+})
+
+ma <- lm(np.chg ~ treat, data = da)
+fit.contrast(ma, "treat", coeff = c(1, -1), conf.int = 0.95)
+```
+
+In the analysis, participants on continuous ART have lower NP score than those on intermittent ART, by 2.07 points(p-value = 0.003). The 95% confidence of the difference is [-3.447172, -0.700186].
+
+## (b)
+
+```{r echo=TRUE, results="hide"}
+pdf("images/scatter_age_np.pdf")
+with(da, scatter.smooth(x = age, y = np.chg))
+dev.off()
+```
+As shown in Figure \ref{fig:figs} in Appendix, there is a non-linear relationship between `age` and `np.chg`, so I include the quadratic term. Also, for easier interpretation, I center `age` around 40.
+
+```{r}
+mb <- lm(np.chg ~ (treat + I(age-40) + I((age - 40)^2) + gender + country + 
+                     art.pre0 + artdur2)^2, data = da)
+stepAIC(mb, scope = list(lower = ~ treat), direction = "backward", trace = F)$call
+
+```
+
+Since the interaction of the treatment effect with the quadratic effect of age is included, to get a hierarchical model, I repeat the model selection, forcing the interaction between the treatment effect and the linear effect of age included.
+
+```{r}
+stepAIC(mb, scope = list(lower = ~ treat * I(age - 40)), 
+        direction = "backward", trace = F)$call
+```
+
+Fit the selected model and check the summary results.
+```{r output.lines = c(2:26)}
+mb.2 <- lm(np.chg ~ (treat + art.pre0) * (I(age - 40) + I((age - 40)^2)) + 
+             I((age - 40)^3) + gender * country, data = da)
+summary(mb.2)
+```
+
+From the results, we can see that there is no evidence that the treatment effect depends on gender, country, ART use at study entry, and duration of ART use. But the treatment effect does depend on age.
+
+## (c)
+Due to the existence of the interaction between the treatment effect and age, we cannot simply use `fit.contrast` to compare the two treatment effects. But from the estimated coefficients above, we can see that at every level of `age`, treatment 2, namely, intermittent ART has higher NP score than continuous ART. Also, from the results in (a), we can also conclude that intermittent ART is better(p-value = 0.003).
+
+## (d)
+i. The treatment effect is confounded with duration of ART use during the study, so the model with all covariates is not suitable for estimating the treatment effect.
+
+ii. 
+
+iii. This model doesn't recognize that the treatment effect would change with age.
+
+
+## (e)
+
+```{r}
+de <- read.table("http://users.stat.umn.edu/~wangx346/artstudy.txt", 
+                 header = T)
+
+```
+
+\newpage
+
+## Appendix
+
+### Figures
+```{r echo=FALSE, out.width="50%", fig.align = "center", fig.cap="\\label{fig:figs}Scatter Plot Age vs. np.chg"}
+include_graphics("images/scatter_age_np.pdf")
+```

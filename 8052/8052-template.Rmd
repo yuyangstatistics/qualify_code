@@ -1,0 +1,76 @@
+---
+title: "\\vspace{-1in} Applied Qualifying Exam"
+author: "November"
+header-includes:
+- \usepackage{fancyhdr}
+- \pagestyle{fancy}
+- \fancyhead[CO]{November}
+- \usepackage{float}
+- \usepackage{subfig}
+output: pdf_document
+geometry: "left = 0.5in, right = 0.5in, top = 1in, bottom = 1in"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, cache = TRUE, fig.pos = 'H')
+# set path to current working directory
+setwd(dirname(rstudioapi::getActiveDocumentContext()$path))
+# suppress the loading required packages messages
+suppressPackageStartupMessages(library(car))
+# used for dealing with figures and output control
+library(knitr) 
+# used to control the output printing, adapted from the post: https://community.rstudio.com/t/showing-only-the-first-few-lines-of-the-results-of-a-code-chunk/6963
+hook_output <- knit_hooks$get("output")
+knit_hooks$set(output = function(x, options) {
+  lines <- options$output.lines
+  if (is.null(lines)) {
+    return(hook_output(x, options))  # pass to default hook
+  }
+  x <- unlist(strsplit(x, "\n"))
+  more <- "..."
+  if (length(lines)==1) {        # first n lines
+    if (length(x) > lines) {
+      # truncate the output, but add ....
+      x <- c(head(x, lines), more)
+    }
+  } else {
+    x <- c(more, x[lines], more)
+  }
+  # paste these lines together
+  x <- paste(c(x, ""), collapse = "\n")
+  hook_output(x, options)
+})
+```
+
+
+```{r message=FALSE, warning=FALSE}
+library(gmodels)
+library(MASS)
+# library(car)
+```
+
+```{r echo=TRUE, results="hide"}
+pdf("images/scatter_age_np.pdf")
+plot(c(1, 2), c(1, 2))
+dev.off()
+```
+As shown in Figure \ref{fig:fig1} in Appendix, there is a non-linear relationship between `age` and `np.chg`, so I include the quadratic term. Also, for easier interpretation, I center `age` around 40.
+
+```{r fig-sub, echo = FALSE, fig.cap='Model Diagnostics', fig.subcap=c('\\label{fig:fig1}residual plot of m.lme4', '\\label{fig:fig2}qqnorm of residuals', '\\label{fig:fig3}qqnorm of random effects'), out.width='.33\\linewidth', fig.asp=1, fig.ncol = 3}
+plot(rnorm(10))
+qqnorm(rnorm(10))
+qqnorm(rnorm(10))
+```
+
+```{r output.lines = c(2:26)}
+
+```
+
+\newpage
+
+## Appendix
+
+### Figures
+```{r echo=FALSE, out.width="50%", fig.align = "center", fig.cap="\\label{fig:figs}Scatter Plot Age vs. np.chg"}
+include_graphics("images/scatter_age_np.pdf")
+```

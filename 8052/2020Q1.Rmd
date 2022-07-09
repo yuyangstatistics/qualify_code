@@ -1,0 +1,300 @@
+---
+title: "\\vspace{-1.2in} 2020 Applied Exam Q1"
+author: "November"
+header-includes:
+- \usepackage{fancyhdr}
+- \pagestyle{fancy}
+- \fancyhead[CO]{November}
+- \usepackage{float}
+- \usepackage{subfig}
+output: pdf_document
+bibliography: references.bib
+geometry: "left = 0.5in, right = 0.5in, top = 1in, bottom = 1in"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, cache = TRUE, fig.pos = 'H')
+# set path to current working directory
+setwd(dirname(rstudioapi::getActiveDocumentContext()$path))
+# used for dealing with figures and output control
+library(knitr) 
+# used to control the output printing, adapted from the post: https://community.rstudio.com/t/showing-only-the-first-few-lines-of-the-results-of-a-code-chunk/6963
+hook_output <- knit_hooks$get("output")
+knit_hooks$set(output = function(x, options) {
+  lines <- options$output.lines
+  if (is.null(lines)) {
+    return(hook_output(x, options))  # pass to default hook
+  }
+  x <- unlist(strsplit(x, "\n"))
+  more <- "..."
+  if (length(lines)==1) {        # first n lines
+    if (length(x) > lines) {
+      # truncate the output, but add ....
+      x <- c(head(x, lines), more)
+    }
+  } else {
+    x <- c(more, x[lines], more)
+  }
+  # paste these lines together
+  x <- paste(c(x, ""), collapse = "\n")
+  hook_output(x, options)
+})
+```
+
+
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+# packages used in this problem, copy this code block to Appendix.
+library(gmodels)
+library(MASS)
+library(car)
+library(dplyr)
+library(nlme)
+library(lattice)
+library(faraway)
+library(geepack)
+library(lme4)
+```
+
+
+(Note: For clarity of the report, the output results are partially presented. R packages and figures are shown in the Appendix. Throughout this report, I will describe the methods and analyses, and summarize the findings in the beginning of each section or each step, and include relevant R code and results afterwards. Some hidden R results are summarized in the comment for the related code.)
+
+# (a)
+**Step 1:** To start with, check the class of the columns and we don't need to do factorization. Create a new variable `instrument` as a factor, with 0 representing the old instrument and 1 representing the new one. 
+
+I then check the outliers in two ways. (1) check whether the data contains some collection error or resulting from instrument failure. I find that Patient 7 who enrolled in 2015 has 3 measurements for sample 1. According how the data is collected, prior to 2017, only two aliquots will be extracted. Therefore, the corresponding 24th observation is likely to be a collection error. Also, I plot out how `CD34pct` changes with `Stored` by Patient and Sample(Figure \ref{fig:d-xyplot}) and find that Patient 19, 20, 22, 29, 35 have `CD34pct` increase over time, which should be considered as instrument failure according to the description of the problem. A closer look at the data implies the 90th, 50th, 87th, 92th, and 84th observation should be outliers from instrument failure. For this type of outliers, since they don't match with the data rules, I decide to remove them. 
+(2) Still in Figure \ref{fig:d-xyplot}, I find an anomaly in Patient 23, corresponding to the 30th observation. For this type of outlier, I try models with and without them and check the change in inference, and use `halfnormal` plot to help validate. As shown in the later analysis, it should be removed.
+
+As for how to combine the measures prior to 2017 and starting from 2017, I have done three trials, with `d`, `d3`, and `d1`. Using 3 as threshold in `d3` is because the new instrument would have at most 3-year storage till now. Using 1 in `d1` as the threshold is because in the available dataset, the maximum of `Stored` starting from 2017 is 1, not 3. The details will be discussed in the following steps.
+
+```{r message=FALSE, results='hide'}
+load('CD34.rda')
+d <- data.frame(CD34)
+# check types of the dataframe
+sapply(d, class)
+# create a new variable instrument as a factor
+d$instrument <- as.factor(ifelse(d$Coll.year > 2016, 1, 0))
+d <- d[-c(24, 50, 84, 87, 90, 92), ] # remove outliers identified by method (1)
+rownames(d) <- NULL  # reset index
+d3 <- d %>% filter(Stored <= 3)  # d3
+d1 <- d %>% filter(Stored <= 1)  # d1
+```
+
+**Step 2:** Next, try fitting a large longitudinal mixed model on `d` and do model selection. I start with a model `m`, including all covariates in `d` for variance reduction purpose. Also, this is not a randomized experiment, so it is necessary to fit an adjusted model. The within-object correlation is specified as Compound Symmetry and I consider both random and fixed slope for `Stored`. Note that there is a nested group structure: `Sample` is nested in `Patient`, so I include it in the model as well. I have tried including `I(Stored^2)` in the model, but it will cause convergence error in estimation, also, including this term will finally lead to an upward fitting curve, and this is not proper given the decaying characteristic of the CD34+cells. So I don't include it the model shown as below.
+
+But sadly, singularity and convergence errors keep showing up. After a few trials, I find that only after I remove `Coll.year`, would I fix the singularity errors. And as for `Viability` and `CD34pct`, they are sensitive to datasets: if I include them in the model, then removing some data points will make the model suffer convergence and singularity errors, while removing some other points will not. Also, checking the anova tables that could be estimated, I find that the effects of `Viability` and `CD34pct` are so apparent. Recalling that `viableCD34pct` is actually the product of these two, this phenomenon could then be understood. Considering all these, I decide to remove these three covariates from the model.
+
+```{r eval=FALSE}
+m <- lme(viableCD34pct ~ instrument * Stored + Sample + factor(Coll.year) + Viability + CD34pct,  
+         data = d, random = ~ Stored | Patient/Sample, correlation = corCompSymm())
+```
+
+
+**Step 3:** Then, I refit the model as shown in `m0`, and perform model comparison to check the structure of random effect and fixed effect. `anova(m0, m1)` shows that we can just consider random intercept and identity within-object correlation structure. `anova(m2, m3)` shows that we can drop `Sample`. The halfnorm plot of `m4` residuals(Figure \ref{fig:m4-m5-halfnorm}(a)) suggests the 29th(the 30th in the original `d`) as an outlier. After removing it, the the halfnormal plot(Figure \ref{fig:m4-m5-halfnorm}(b)) looks fine.
+
+Checking the summary and Anova results of `m5`, I find that the slopes of `Stored` prior to 2017 and after 2017 are so different(with a 0.5695914 difference, and p-value is 1.244e-14). Combining with the pattern showed in Figure \ref{fig:d-xyplot-viable}, I think it may be that the viable CD34+ cells will decay quickly in the first few years and then slows down decaying, and for observations prior to 2017, the storage time could be very long and there are only two data points for each patient, and hence the estimated slope would be small. While for observations starting from 2017, the length of storage is short and the estimated slope would be larger. In this scenario, since `instrument` interacts with `Stored` strongly, we can not distinguish the instrument effect from the effect of long storage time, and the estimation of the trajectory over time will not be trustworthy. Therefore, I think simply using `d` is not a good way to combine the two sources of information. Performing similar procedures on `d3`(omitted in in the report), and checking the `xyplot` as shown in Figure \ref{fig:d3-xyplot-viable}, I find that `d3` suffers from similar issues, and hence is not a good choice either. 
+
+```{r}
+m0 <- lme(viableCD34pct ~ instrument * Stored + Sample, data = d, 
+          random = ~ Stored | Patient/Sample, correlation = corCompSymm())
+m1 <- lme(viableCD34pct ~ instrument * Stored + Sample,
+          data = d, random = ~ 1 | Patient)
+anova(m0, m1)
+```
+
+```{r}
+m2 <- update(m1, method = "ML")
+m3 <- update(m2, fixed = viableCD34pct ~ instrument * Stored)
+anova(m2, m3)  # suggests m3 is good enough
+```
+
+```{r}
+m4 <- update(m3, method = "REML") # outlier checking is in the appendix
+m5 <- update(m4, data = d[-c(29),])  # outlier checking is in the appendix
+fixef(m5) # check the estimated fixed effects
+Anova(m5, type = 2) # check the significance of the terms
+```
+
+
+**Step 4:** As for `d1`, it doesn't have the same issues as `d` and `d3`. For Patients enrolled in prior to 2017, they only have 1 observation per sample in `d1` and hence would not have a slope of `Stored`. In this case, we then don't need to consider the `instrument:Stored` effect. Specifically, we are using the points starting from 2017 to estimate the trajectory, and use points before 2017 for comparing the instruments and obtaining a better estimate of the variance terms. Also, there are still many(72) observations in `d1`, so using it will not lose too much information. Therefore, `d1` is my preferred choice for combining the old and new measurement data. Shown below is my modeling on `d1`.
+
+As mentioned before, the trajectory over time is decaying, so fitting a quadratic term of `Stored` is not proper, even if including it will give significant result. I have also tried including `exp(-Stored)` to model the decaying pattern, but the estimated curve doesn't match with intuition, so I don't use it in the end. In `d1`, as mentioned above, we can omit the `instrument:Stored` effect. I have also tried including this interaction term, but the model would then get singularity errors. Therefore, `instrument:Stored` is not included in the model. The previous analysis on `d` has justified the random effect structure, so I would directly use random intercept and identity within-object correlation structure here.
+
+Starting with `ma.0`, `anova(ma.0, ma.1)` shows that we can drop `Sample`. As shown in Figure \ref{fig:ma2-diag}, the halfnormal plot for `ma.2` shows no apparent outliers. The residual plot suggests some variance heterogeneity, so I fit a linear model and try using boxcox to find a plausible transformation. Box-Cox result suggests a 0.3 power transformation. With such a transformation, the homogeneity of  variance gets better, but the normality pattern of the residuals gets worse(Figure \ref{fig:ma3-diag}). Also, interpretation will get harder with this power transformation. I have also tried log transformation, and not as good either. So I would just stick with the original form and use `ma.2` as the final model. But we should keep in mind that the homogeneous variance assumption is not satisfied in this analysis, and this is a compromise I make.
+
+```{r}
+d1 <- d[-c(29), ] %>% filter(Stored <= 1)  # update d1
+ma.0 <- lme(viableCD34pct ~ instrument + Stored + Sample, 
+            data = d1, random = ~ 1 | Patient, method = "ML")
+ma.1 <- update(ma.0, fixed = viableCD34pct ~ instrument + Stored)
+anova(ma.0, ma.1)
+```
+
+```{r output.lines = c(4:6)}
+ma.2 <- update(ma.1, method = "REML") # use REML for inference, and diagnostics is in the appendix
+Anova(ma.2, type = 2)
+```
+
+```{r}
+# try boxcox
+lmod <- lm(viableCD34pct ~ instrument + Stored, data = d1)
+bc <- boxcox(lmod, plotit = FALSE)
+i <- which.max(bc$y)
+bc$x[i] # suggests 0.3 power transformation
+ma.3 <- update(ma.2, fixed = (viableCD34pct)^0.3 ~instrument+ Stored) # diagnostics is in the appendix
+```
+
+```{r output.lines = c(11:15)}
+# chose ma.2 as the final model, and check the estimated fixed effects
+summary(ma.2)
+```
+
+**Step 5:** Use `fit.contrast` to estimate the effect of the instrument change. As shown below, the new instrument would give lower measurement of the percentage of cell that are viable CD34+ cells than the old instrument, by about 0.27728. And the 95% CI is [-0.4731468, -0.08141761]. With `Stored` held fixed, the estimateed conversion equation is then 
+
+$$viableCD34pct_{new} = viableCD34pct_{old} - 0.2772822.$$
+
+```{r echo=FALSE}
+options(width=100)
+```
+
+```{r}
+fit.contrast(ma.2, "instrument", coeff = c(-1, 1), conf.int = 0.95)
+```
+
+
+Throughout the analysis, the assumptions are: (1) the random intercepts and the error terms are independent; (2) the random intercept terms are identically independently normally distributed; (3) the error terms are identically independently normally distributed. It would be hard to check assumption (1). And as for (2) and (3), the normality is acceptable, and the  variance homogeneity is doubtful.
+
+# (b)
+
+Since I use `d1` for analysis and there would be no decaying pattern for years prior to 2017(only one observation per patient per sample), I would describe the trajectory of decay for points starting from 2017, using `instrument=1`. 
+
+The estimated trajectory is as follows. And it tells us that with 1 year increase in storage, the percentage of cells that are viable CD34+ cells would decrease by 0.6717928. And as mentioned in part (a), we need to note that the decaying speed will decrease as time goes by and that the change in later years would be smaller than the first few years. Given the limited amount of data, I am not able to model such a pattern, but we can further work on this as more data is obtained.
+
+$$viableCD34pct = 0.9197850 - 0.2772822 - 0.6717928 * Stored = 0.6425028 - 0.6717928 * Stored.$$
+
+# (c)
+
+Solving the inequality $viableCD34pct = 0.6425028 - 0.6717928 * Stored > 0.05$, I get $Stored < 0.8819725$. So I predict that the product will retain effective for 0.8819725 years. 
+
+I consider two methods to quantify the uncertainty. The first method is to treat `effective` as binomially distributed, then we can fit a GLMM model and use the estimated probability at `Stored=1` to quantify the uncertainty. For simplicity, I just use the selected variables in (a). The second method is to get the prediction interval of `viableCD34pct` at `Stored=1`. And since there is no available function for getting the interval, I use `lmer{lme4}` and bootstrap(as suggested in @faraway2016extending) to get the prediction interval and estimate the probability of effective. 
+
+As shown below, `m1.gee` predicts the probability of remaining effective as 0.5837, while `m.lmer` and bootstrap predicts that after 1 year, the 95% CI of the percentage would be [-0.6217  0.5491], and the probability of remaining effective is 0.402. I would trust the one given by bootstrap more.
+
+```{r warning=FALSE, message=FALSE}
+d1 <- within(d1, {
+  effective <- ifelse(viableCD34pct > 0.05, 1, 0)
+})
+# newdata for prediction
+newdata <- data.frame(instrument="1", Stored = 1, Patient = "40")
+# geeglm model
+m1.gee <- geeglm(formula=effective ~ instrument + Stored, id = Patient, 
+                 data = d1, corstr = "exchangebable", family = binomial)
+predict(m1.gee, newdata)
+```
+
+```{r warning=FALSE, message=FALSE}
+# lmer model
+m.lmer <- lmer(viableCD34pct ~ instrument + Stored + (1|Patient), data = d1)
+# bootstrap for prediction
+group.sd <- as.data.frame(VarCorr(m.lmer))$sdcor[1]
+resid.sd <- as.data.frame(VarCorr(m.lmer))$sdcor[2]
+pv <- numeric(1000)
+for(i in 1:1000){
+ set.seed(i)
+ y <- unlist(simulate(m.lmer))
+ bmod <- refit(m.lmer, y)
+ pv[i] <- predict(bmod, re.form=~0, newdata = newdata)[1] + 
+   rnorm(n=1,sd=group.sd) + rnorm(n=1,sd=resid.sd)
+}
+# 95% prediction interval
+quantile(pv, c(0.025, 0.975))
+# estimate effective probability
+mean(pv > 0.05)
+```
+
+# References
+
+<div id="refs"></div>
+
+
+
+
+\newpage
+
+# Appendix
+
+
+## Packages
+
+All R packages used in this project are listed below.
+```{r eval=FALSE}
+library(gmodels)
+library(MASS)
+library(car)
+library(dplyr)
+library(nlme)
+library(lattice)
+library(faraway)
+library(geepack)
+library(lme4)
+```
+
+
+## Figures
+
+
+```{r d-xyplot, echo = FALSE, fig.cap='\\label{fig:d-xyplot}CD34pct vs. Stored in original d(used to identify outliers)', fig.height=4}
+# plot out pct vs storing time
+xyplot(CD34pct ~ Stored | Patient, data = d, groups = ~Sample, 
+       type = c('g', 'p', 'l'), layout = c(10, 4),
+       auto.key = F, main = 'CD34pct, by Patient, by Sample(red for Sample 2)')
+```
+
+```{r d-xyplot-viable, echo = FALSE, fig.cap='\\label{fig:d-xyplot-viable}viableCD34pct vs. Stored in d(after outlier removing)', fig.height=4}
+# plot out pct vs storing time
+xyplot(viableCD34pct ~ Stored | Patient, data = d, groups = ~Sample, 
+       type = c('g', 'p', 'l'), layout = c(10, 4),
+       auto.key = F, main = 'viableCD34pct, by Patient, by Sample(red for Sample 2)')
+```
+
+```{r d3-xyplot-viable, echo = FALSE, fig.cap='\\label{fig:d3-xyplot-viable}viableCD34pct vs. Stored in d3(Pay attention to Patient 24, 31, and 32)', fig.height=4}
+# plot out pct vs storing time
+xyplot(viableCD34pct ~ Stored | Patient, data = d3, groups = ~Sample, 
+       type = c('g', 'p', 'l'), layout = c(10, 4),
+       auto.key = F, main = 'viableCD34pct, by Patient, by Sample(red for Sample 2)')
+```
+
+```{r d1-xyplot-viable, echo = FALSE, fig.cap='\\label{fig:d1-xyplot-viable}viableCD34pct vs. Stored in d1', fig.height=4}
+# plot out pct vs storing time
+xyplot(viableCD34pct ~ Stored | Patient, data = d1, groups = ~Sample, 
+       type = c('g', 'p', 'l'), layout = c(10, 4),
+       auto.key = F, main = 'viableCD34pct, by Patient, by Sample(red for Sample 2)')
+```
+
+
+```{r m4-m5-halfnorm, echo=FALSE, fig.cap="\\label{fig:m4-m5-halfnorm}Residual Diagnostics for m4 and m5", fig.subcap=c("Halfnorm Plot of m4 Residuals", "Halfnorm Plot of m5 Residuals"), out.width = '0.3\\linewidth', fig.asp=1, fig.ncol = 2}
+# diagnostics of m4
+halfnorm(residuals(m4), main = "Halfnorm Plot of m4 Residuals")
+halfnorm(residuals(m5), main = "Halfnorm Plot of m5 Residuals")
+```
+
+
+
+```{r ma2-diag, echo = FALSE, fig.cap='\\label{fig:ma2-diag}Model Diagnostics for ma.2', fig.subcap=c("Halfnormal plot of ma.2", 'Residual Plot of ma.2', 'Q-Q plot of residuals of ma.2', 'Q-Q plot of the random intercept of ma.2'), out.width='.245\\linewidth', fig.asp=1, fig.ncol = 4}
+halfnorm(residuals(ma.2))
+plot(ma.2)
+qqnorm(residuals(ma.2), main = "QQ plot for residuals")
+qqline(residuals(ma.2))
+qqnorm(ranef(ma.2)$"(Intercept)", main = "QQ plot for the random intercept")
+qqline(ranef(ma.2)$"(Intercept)")
+```
+
+```{r ma3-diag, echo = FALSE, fig.cap='\\label{fig:ma3-diag}Model Diagnostics for ma.3', fig.subcap=c("Halfnormal plot of ma.3", 'Residual Plot of ma.3', 'Q-Q plot of residuals of ma.3', 'Q-Q plot of the random intercept of ma.3'), out.width='.245\\linewidth', fig.asp=1, fig.ncol = 4}
+halfnorm(residuals(ma.3))
+plot(ma.3)
+qqnorm(residuals(ma.3), main = "QQ plot for residuals")
+qqline(residuals(ma.3))
+qqnorm(ranef(ma.3)$"(Intercept)", main = "QQ plot for the random intercept")
+qqline(ranef(ma.3)$"(Intercept)")
+```
+
+

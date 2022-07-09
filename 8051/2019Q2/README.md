@@ -1,0 +1,69 @@
+Note:
+1. Most of the functions below assume the response name to be `y`.
+
+Details of functions
+- `hist.qq.box.plot`: 
+    - Plot the histograms, qqplots, and boxplots for the covariates and the response.
+    - The response plot is at the end.
+    - May need to modify the title names.
+- `outlier.check`:
+    - Check the outliers given a fitted linear model.
+    - Need to combine information from multiple sources.
+    - Need to check whether or not the inference changes.
+- `scatter.plot`:
+    - Plot scatter plot of covariates vs. response, with fitter linear and quadratic curve.
+    - May need to modify title names.
+- `plot.pred`:
+    - Plot the scatter plot of prediction and test values.
+    - This function is used inside `plot.regularied`, `plot.abic`, and `plot.xgb.rf`, and not outside.
+- `plot.regularized`:
+    - Plot the goodness of fit for regularized methods.
+    - 7/10 for training, 3/10 for testing.
+    - $\lambda_{min}$ is used.
+- `plot.xgb.rf`:
+    - Plot the goodness of fit for XGBoost and Random Forest.
+- `plot.abic`:
+    - Plot the goodness of fit for AIC/BIC backward/both selection.
+- `plot.lmod`:
+    - Plot the goodness of fit for a linear model.
+- `cv.regularized.compare`:
+    - Use cross validation to compare regularized models.
+    - `n2`: test size. Need to be larger for finer comparison.
+    - `r`: the number of repetition.
+    - Seeds are set to be i for each iteration, to ensure reproducibility.
+    - Used when AIC/BIC cannot work for large datasets.
+- `cv.abic.compare`:
+    - Use CV to compare AIC/BIC backward/both models.
+- `cv.compare`:
+    - Use CV to compare AIC/BIC both models and regularized models.
+    - Used when AIC/BIC works.
+- `cv.ml.compare`:
+    - Use CV to compare XGBoost and RF models.
+- `cv.lmod.compare`:
+    - Use CV to compare linear models.
+- `select.features.regularized`:
+    - Print out the selected features by regularized methods given a dataset.
+- `select.features.abic`:
+    - Print out the selected features by AIC/BIC methods given a dataset.
+- `check.importance`:
+    - Display feature importance by SOIL, RF, and XGBoost given a dataset.
+- `order2.model.matrix`:
+    - Obtain a dataframe with order 2 interactions and quadratic terms. The output also contains the design matrix.
+- `tune.xgb.reg`:
+    - Tune parameters for XGBoost regressor.
+    - Need to change the parameter grid for each case.
+- `soil`:
+    - Print out the variables that have soil value larger than 0.
+    - Used inside `check.importance`.
+    - May modify the output if we want to see the whole SOIL importance.
+- `AIC.BIC`:
+    - Print out the AIC/BIC/AICc values for a linear model.
+- `loo.lm`:
+    - Use LOO to estimate the MSE/MAE and std of a linear model.
+- `loo.avg`:
+    - Use LOO to estimate the performance of the linear models selected by multiple methods, as well as the averaged model.
+    - Need to modify the function to add more lmforms.
+    - Need to modify the averaging weight for different cases.
+- `pred.avg`:
+    - Return the final averaged prediction.
+    - Averaging weights need to be modified.

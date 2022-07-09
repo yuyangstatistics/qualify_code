@@ -1,0 +1,232 @@
+---
+title: "\\vspace{-1.2in} 2008 Q2"
+author: "November"
+header-includes:
+- \usepackage{fancyhdr}
+- \pagestyle{fancy}
+- \fancyhead[CO]{November}
+- \usepackage{float}
+- \usepackage{subfig}
+output: pdf_document
+geometry: "left = 0.5in, right = 0.5in, top = 1in, bottom = 1in"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, cache = TRUE, fig.pos = 'H')
+# set path to current working directory
+setwd(dirname(rstudioapi::getActiveDocumentContext()$path))
+# used for dealing with figures and output control
+library(knitr) 
+# used to control the output printing, adapted from the post: https://community.rstudio.com/t/showing-only-the-first-few-lines-of-the-results-of-a-code-chunk/6963
+hook_output <- knit_hooks$get("output")
+knit_hooks$set(output = function(x, options) {
+  lines <- options$output.lines
+  if (is.null(lines)) {
+    return(hook_output(x, options))  # pass to default hook
+  }
+  x <- unlist(strsplit(x, "\n"))
+  more <- "..."
+  if (length(lines)==1) {        # first n lines
+    if (length(x) > lines) {
+      # truncate the output, but add ....
+      x <- c(head(x, lines), more)
+    }
+  } else {
+    x <- c(more, x[lines], more)
+  }
+  # paste these lines together
+  x <- paste(c(x, ""), collapse = "\n")
+  hook_output(x, options)
+})
+```
+
+
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+# packages used in this problem, copy this code block to Appendix.
+library(FrF2)
+library(faraway)
+library(cfcdae)
+library(MASS)
+library(rsm)
+```
+
+## (a)
+This is a $2^k$ fractional factorial design, so we need to specify the contrast to be `contr.sum`.
+```{r}
+# read and preprocess data: factorization
+d <- read.table('circuit.txt', header = T)
+cols <- names(d)[1:8]
+d[cols] <- lapply(d[cols], factor)
+sapply(d, class)
+# set contrast option
+options(contrasts = c('contr.sum', 'contr.poly'))
+```
+
+
+```{r}
+# check the alias structure
+m <- lm(y ~ blocks + a*b*c*d*e*f*g, data = d)
+dr <- alias(m)$Complete[, "blocks1"]
+dr[dr %in% c("1", "-1")]
+
+# try to find a better block generator
+m0 <- lm(y ~ a*b*c*d*e*f*g, data = d)
+aliases(m0)
+```
+
+The block generator used in the experiment is `BCD`, and the issue is that it will confound with the main effect `G`, which is undesirable. 
+To find a block generator that will not confound with main effects, and even not with two-way interaction terms, we can check the alias structure. From the results, we can see that `ACD` or `ABD` would be good choices, since they would confound with only one two-way interaction term, and the others are three-way or higher order.
+
+## (b)
+```{r}
+# check the halfnorm plot
+halfnorm(-2 * coef(m)[-1], labs = names(coef(m)[-1]), nlab = 3)
+title(main = "Effects in y ~ blocks + a*b*c*d*e*f*g")
+# aliases of A, E, F
+dr <- alias(m)$Complete[, "a1"]
+dr[dr %in% c("1", "-1")]
+dr <- alias(m)$Complete[, "e1"]
+dr[dr %in% c("1", "-1")]
+dr <- alias(m)$Complete[, "f1"]
+dr[dr %in% c("1", "-1")]
+```
+
+The top3 promising main effects are: A, E, F. For this problem, I assume all three-way interactions terms are not important. Factor A is aliased with EG, factor E is aliased with DF and AG, and factor F is aliased with DE. We can not separate the effect of these three main effects with the two-way interaction effects, so it is likely that these two-way interaction terms are also important. Further analysis should concentrate on A, E, F.
+
+## (c)
+```{r}
+m1 <- lm(y ~ blocks + a * e * f, data = d)
+anova(m1)
+alias(m1)
+interaction.plot(x.factor = d$a, trace.factor = d$e, response = d$y, 
+                 fun = mean, legend = T, xpd = NA, type = 'b', 
+                 trace.label = 'Factor E', xlab = "Factor A", 
+                 ylab = "Mean Response", 
+                 lty = c(1, 2, 4), col = c("black", "red", "blue"), 
+                 main = "Interaction Plot for y ~ blocks + a * e * f")
+
+m2 <- lm(y ~ blocks + a + e + f, data = d)
+anova(m2)
+anova(m1, m2)
+summary(m2)
+alias(m2)
+
+# model diagnostics
+par(mfrow = c(2, 2))
+plot(m2)
+par(mfrow = c(1, 1))
+boxcox(m2)
+
+linear.contrast(m2, term = a, contr.coefs = c(1, -1))
+linear.contrast(m2, term = e, contr.coefs = c(1, -1))
+linear.contrast(m2, term = f, contr.coefs = c(1, -1))
+
+```
+
+Note that effect AE confounds with the block, so we cannot separate these two.
+The ANOVA table shows that the interaction terms are not significant, so I delete them and refit the model. Comparing `m1` and `m2`, I would use `m2` as the final model.
+
+All three main effects are significant, with p-value being .... 
+
+The model diagnostic results look good.
+
+
+## (d)
+```{r}
+# response surface
+dd <- within(d, {
+  a <- ifelse(a=='-1', -1, 1)
+  e <- ifelse(e=='-1', -1, 1)
+  f <- ifelse(f=='-1', -1, 1)
+  blocks <- ifelse(blocks=='1', -1, 1)
+})
+m.rsm <- rsm(y ~ blocks + FO(a, e, f), data = dd)
+summary(m.rsm)
+(5.7331 - 1.5) / 1.5481
+newdata <- data.frame(blocks=0, a=0, e=0, f=2.75)
+(ypred <- predict(m.rsm, newdata))
+
+par(mfrow = c(1, 3))
+contour(m.rsm, ~ a + e + f)
+par(mfrow = c(1, 1))
+```
+
+From the contour plot, I don't think $\leq 1.5$ is achievable with current settings.
+
+## (e)
+Do a fold-over design: reverse all signs in the original design. 
+```{r}
+
+```
+
+(Note: For clarity of the report, part of the output results are hidden. And the utilized packages are as shown in the Appendix.)
+
+Reminder
+
+- Read through the problem, understand the problem, write down the solution sketch and highlight note, check understanding, then start coding.
+- If there are covariates, start with plotting scatter plots.
+
+
+
+
+Checklist
+
+(1) Randomized or observational? Fit an adjusted or unadjusted model?
+(2) Balanced or unbalanced?
+(3) Data preprocessing. Factorization.
+(4) For change from baseline problems, do remember to remove the baseline observation.
+(2) `contr.sum` or `contr.treatment`? If 2^k factorial, we have to use `contr.sum`. 
+(3) Fit a large model, check model assumptions: typical 4 plots, residual plots, qqnorm for error, qqnorm for random effects, boxcox for transformation. If specified, check outliers. Check P17.1 in the assignments.R for fancy plots. But note that we need to refit the model and check whether the inference will change in order to determine outliers.
+(4) Correlation structure? Which response to use? Interaction and polynomial terms? Random slope or random intercept? Try and use model diagnostics to help choose.
+(4) If there are covariates, plot the scatter plot of the response vs. covariate. Check lecture code Chapter 17. Center the covariate for better interpretation.
+(5) `anova()` or `Anova(, type = 2)`?
+(6) Multiple comparison. Use `glht()`, use `linear.contrast()` and `fit.contrast()` to check. If using `intervals()`, then the contrast option needs to be `contr.treatment`.
+(7) Copy the library code block to the appendix.
+(8) Follow-up or use diff?
+(9) If possible, plot fitted to check the goodness of the model.
+(10) Always use `REML` to make inference.
+(11) Do not factorized `fu`.
+(12) Check previous problems to guide writing.
+(13) Model selection: interaction terms, quadratic terms, random slope/intercept, correlation structure. AIC, or manual. 
+(14) Show all your findings and considerations, let the graders know your understandings.
+
+
+Notes
+(1) `Anova(type=2)` means independent effect.
+(2) We can treat `month` as factor or numerics for variance reduction. Factor is more general. And if we want to try random slope, then we need to use numerics.
+
+As shown in Figure \ref{fig:fig1} in Appendix, there is a non-linear relationship between `age` and `np.chg`, so I include the quadratic term. Also, for easier interpretation, I center `age` around 40.
+
+
+```{r output.lines = c(2:26)}
+
+```
+
+\newpage
+
+## Packages
+
+All R packages used in this problem are listed below.
+```{r eval=FALSE}
+library(gmodels)
+library(MASS)
+library(car)
+library(dplyr)
+```
+
+
+## Appendix
+
+### Figures
+
+```{r fig-sub, echo = FALSE, fig.cap='Model Diagnostics', fig.subcap=c('\\label{fig:fig1}residual plot of m.lme4', '\\label{fig:fig2}qqnorm of residuals', '\\label{fig:fig3}qqnorm of random effects'), out.width='.33\\linewidth', fig.asp=1, fig.ncol = 3}
+plot(rnorm(10))
+qqnorm(rnorm(10))
+qqnorm(rnorm(10))
+# 
+# plot(m.lme)
+# qqnorm(residuals(m.lme), main = "QQ plot for residuals")
+# qqline(residuals(m.lme))
+# qqnorm(ranef(m.lme)$"(Intercept)", main = "QQ plot for the random intercept")
+# qqline(ranef(m.lme)$"(Intercept)")
+```

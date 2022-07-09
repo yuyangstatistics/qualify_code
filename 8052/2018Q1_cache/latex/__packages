@@ -1,0 +1,10 @@
+base
+knitr
+gmodels
+MASS
+carData
+car
+nlme
+emmeans
+dplyr
+bookdown

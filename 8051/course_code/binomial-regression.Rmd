@@ -1,0 +1,36 @@
+---
+title: "binomial-regression"
+author: "Yu Yang"
+date: "10/15/2018"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r orings}
+library(faraway)
+
+# Challenger O-rings data analysis
+
+data(orings)
+?orings # used to check the information of the dataset
+orings
+attach(orings)
+plot(damage/6~temp,xlim=c(25,85),ylim=c(0,1),xlab="Temp", ylab="Prop of damage")
+
+```
+
+## GLM Model
+
+To run the glm model, we need to specify both the success and failure count.
+
+```{r glm}
+m1<-glm(cbind(damage,6-damage)~temp,family=binomial)
+summary(m1)
+
+```
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
